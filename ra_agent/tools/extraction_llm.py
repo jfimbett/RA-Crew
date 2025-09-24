@@ -47,7 +47,7 @@ def _build_llm(cfg: LLMConfig):
 
 SYSTEM_PROMPT = (
     "You are a meticulous financial data extraction agent. Read the provided filing text and extract the requested metric. "
-    "Do not guess. If not present, return found=false. Prefer values in the Summary Compensation Table when asked about CEO total compensation. "
+    "Do not guess. If not present, return found=false. "
     "Output strictly as a compact JSON object with keys: found (bool), value (string, raw as shown), currency (string or empty), year (string or empty), section (string or empty), evidence (short snippet)."
 )
 
