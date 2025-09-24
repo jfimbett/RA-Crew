@@ -8,6 +8,8 @@ from rich import print
 from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 
@@ -95,24 +97,52 @@ def main(
 
     filing_types = [f.strip() for f in filings.split(",") if f.strip()]
 
-    # Print a simple agents/tasks overview before processing
+    # Print a clear delegation graph and pipeline overview before processing
+    console = Console()
     try:
         from .agents.crew import build_crew
-
         crew = build_crew()
-        console = Console()
-        print(Panel.fit("[bold magenta]Crew Overview[/bold magenta]", border_style="magenta"))
-        tree = Tree("Workflow")
-        agents_node = tree.add("Agents")
-        for ag in crew.agents:
-            agents_node.add(f"[cyan]{ag.name}[/cyan]: {ag.role}")
-        tasks_node = tree.add("Sequential Tasks")
-        for t in crew.tasks:
-            tasks_node.add(f"[green]{t.agent.name}[/green] → {t.description[:60]}...")
+        # Delegation graph (who delegates to whom)
+        console.print(Panel.fit("[bold magenta]Crew Agents & Delegation[/bold magenta]", border_style="magenta"))
+        tree = Tree("Delegation")
+        # Find the orchestrator (allow_delegation True)
+        orchestrators = [ag for ag in crew.agents if getattr(ag, "allow_delegation", False)]
+        if orchestrators:
+            ga = orchestrators[0]
+            ga_node = tree.add(f"[yellow]{ga.name}[/yellow]: {ga.role}")
+            for ag in crew.agents:
+                if ag is ga:
+                    continue
+                ga_node.add(f"[cyan]{ag.name}[/cyan]: {ag.role}")
+        else:
+            agents_node = tree.add("Agents")
+            for ag in crew.agents:
+                agents_node.add(f"[cyan]{ag.name}[/cyan]: {ag.role}")
         console.print(tree)
+        console.print(Rule("Pipeline"))
+        # Sequential pipeline based on tasks order
+        pipeline = " -> ".join(f"[green]{t.agent.name}[/green]" for t in crew.tasks)
+        console.print(pipeline)
     except Exception:
-        # Non-fatal if CrewAI isn't available in this run context
-        pass
+        # Fallback static graph if CrewAI isn't available
+        console.print(Panel.fit("[bold magenta]Crew Agents & Delegation[/bold magenta]", border_style="magenta"))
+        tree = Tree("Delegation")
+        ga_node = tree.add("[yellow]GraduateAssistant[/yellow]: Orchestrate crew")
+        for name, role in [
+            ("DataRetriever", "Retrieve SEC EDGAR filings"),
+            ("DataCleaner", "Clean and normalize text"),
+            ("DataExtractor", "Extract variables and facts"),
+            ("DataCalculator", "Compute metrics"),
+            ("DataValidator", "Validate extracted data"),
+            ("DataExporter", "Export final data"),
+        ]:
+            ga_node.add(f"[cyan]{name}[/cyan]: {role}")
+        console.print(tree)
+        console.print(Rule("Pipeline"))
+        console.print(
+            "[green]DataRetriever[/green] -> [green]DataCleaner[/green] -> [green]DataExtractor[/green] -> "
+            "[green]DataCalculator[/green] -> [green]DataValidator[/green] -> [green]DataExporter[/green]"
+        )
 
     # No JSON section hints supported
 
