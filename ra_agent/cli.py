@@ -5,6 +5,9 @@ from typing import Optional, List
 import typer
 from tqdm import tqdm
 from rich import print
+from rich.console import Console
+from rich.table import Table
+from rich.tree import Tree
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
 
@@ -92,6 +95,25 @@ def main(
 
     filing_types = [f.strip() for f in filings.split(",") if f.strip()]
 
+    # Print a simple agents/tasks overview before processing
+    try:
+        from .agents.crew import build_crew
+
+        crew = build_crew()
+        console = Console()
+        print(Panel.fit("[bold magenta]Crew Overview[/bold magenta]", border_style="magenta"))
+        tree = Tree("Workflow")
+        agents_node = tree.add("Agents")
+        for ag in crew.agents:
+            agents_node.add(f"[cyan]{ag.name}[/cyan]: {ag.role}")
+        tasks_node = tree.add("Sequential Tasks")
+        for t in crew.tasks:
+            tasks_node.add(f"[green]{t.agent.name}[/green] → {t.description[:60]}...")
+        console.print(tree)
+    except Exception:
+        # Non-fatal if CrewAI isn't available in this run context
+        pass
+
     # No JSON section hints supported
 
     results = []
@@ -112,7 +134,15 @@ def main(
             for f in filings:
                 html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
                 text = html_to_text(html)
-                docs.append({"meta": f, "text": text, "html": html})
+                # Persist raw HTML under data/filings/CIK/ACCESSION/filename
+                cik_nozero = str(int(cik))
+                acc_no = f["accessionNumber"].replace("-", "")
+                base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
+                os.makedirs(base_dir, exist_ok=True)
+                html_path = os.path.join(base_dir, f["primaryDocument"])
+                with open(html_path, "w", encoding="utf-8") as fh:
+                    fh.write(html)
+                docs.append({"meta": {**f, "cik": cik, "paths": {"html": html_path}}, "text": text, "html": html})
             cleaned = [
                 {"meta": d["meta"], "text": clean_text(d["text"]), "html": d["html"]}
                 for d in docs
@@ -137,6 +167,7 @@ def main(
                             "value": res["value"],
                             "context": res["context"],
                             "form": doc["meta"]["form"],
+                            "file_path": doc["meta"].get("paths", {}).get("html"),
                         }
                     )
             report = validate_values(rows)

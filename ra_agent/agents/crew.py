@@ -114,7 +114,15 @@ def build_crew() -> Crew:
         for f in filings:
             html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
             text = html_to_text(html)
-            out.append({"meta": f, "html": html, "text": text})
+            # Persist to data folder
+            cik_nozero = str(int(cik))
+            acc_no = f["accessionNumber"].replace("-", "")
+            base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
+            os.makedirs(base_dir, exist_ok=True)
+            html_path = os.path.join(base_dir, f["primaryDocument"])
+            with open(html_path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            out.append({"meta": {**f, "cik": cik, "paths": {"html": html_path}}, "html": html, "text": text})
         return {"filings": out}
 
     t_retrieve = Task(
