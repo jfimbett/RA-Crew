@@ -12,7 +12,7 @@ from .config import settings
 from .utils.logging_utils import setup_logging
 from .tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
 from .tools.cleaning import clean_text
-from .tools.extraction import extract_metric, extract_metric_with_hints
+from .tools.extraction import extract_metric, extract_metric_with_hints, extract_metric_with_hint_text
 from .tools.validation import validate_values
 from .tools.exporter import export_rows
 from .utils.identifiers import is_cik, normalize_cik, ticker_to_cik
@@ -54,7 +54,8 @@ def main(
     metrics: Optional[str] = typer.Option(None, help="Comma-separated metrics to extract"),
     metrics_file: Optional[str] = typer.Option(None, help="Path to a file with metrics, one per line"),
     output_format: str = typer.Option("json", help="json or csv"),
-    section_hints_file: Optional[str] = typer.Option(None, help="JSON file with section hints (no defaults; you must provide)"),
+    section_hints_file: Optional[str] = typer.Option(None, help="JSON file with section hints (optional)"),
+    hint: Optional[str] = typer.Option(None, help="Free-text hint to guide extraction (optional)"),
     interactive: bool = typer.Option(False, help="Launch interactive wizard"),
     verbose: bool = typer.Option(False, help="Increase verbosity"),
 ):
@@ -69,8 +70,9 @@ def main(
         year = int(Prompt.ask("Enter year", default="2024"))
         filings = Prompt.ask("Filing types (comma-separated)", default="DEF 14A")
         metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
-        # Always ask for hints; no defaults
-        want_hints = Confirm.ask("Do you want to provide section hints (JSON file)?", default=False)
+        # Ask for hint text (recommended); JSON hints optional
+        hint = Prompt.ask("Optional free-text hint (press Enter to skip)", default="") or None
+        want_hints = Confirm.ask("Provide section hints JSON?", default=False)
         if want_hints:
             section_hints_file = Prompt.ask("Path to section hints JSON", default="") or None
         companies = f"{id_input}:{year}"
@@ -128,7 +130,15 @@ def main(
             for doc in cleaned:
                 for m in metric_list:
                     # If hints provided, try hinted extraction first (placeholder)
-                    res = extract_metric_with_hints(doc["text"], m, hints)
+                    # Prefer free-text hint if provided; else JSON; else fallback
+                    if hint:
+                        res = extract_metric_with_hint_text(doc["text"], m, hint)
+                        if not res.get("value") and hints:
+                            res = extract_metric_with_hints(doc["text"], m, hints)
+                    elif hints:
+                        res = extract_metric_with_hints(doc["text"], m, hints)
+                    else:
+                        res = extract_metric(doc["text"], m)
                     rows.append(
                         {
                             "identifier": identifier,
@@ -143,7 +153,7 @@ def main(
                     )
             report = validate_values(rows)
             out_path = export_rows(rows, output_format, name=f"results_{identifier}_{year}")
-            results.append({"identifier": identifier, "ticker": ticker, "cik": cik, "year": year, "output": out_path, "validation": report})
+            results.append({"identifier": identifier, "ticker": ticker, "cik": cik, "year": year, "output": out_path, "validation": report, "hint": hint, "section_hints_file": section_hints_file})
         except Exception as e:
             results.append({"identifier": identifier, "year": year, "error": str(e)})
 
