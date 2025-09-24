@@ -1,5 +1,5 @@
 """
-RA-Agent package: Multi-agent crew for SEC filings retrieval and analysis.
+RA-Crew package: Multi-agent crew for SEC filings retrieval and analysis.
 """
 
 __all__ = [

@@ -13,7 +13,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 def setup_logging(level: str | None = None) -> None:
     os.makedirs(settings.log_dir, exist_ok=True)
-    log_file = os.path.join(settings.log_dir, "ra_agent.log")
+    log_file = os.path.join(settings.log_dir, "ra_crew.log")
     logger.remove()
     lvl = level or settings.log_level
     logger.add(lambda msg: print(msg, end=""), level=lvl)

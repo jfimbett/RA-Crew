@@ -1,4 +1,4 @@
-# RA-Agent: SEC Filings AI Extraction Crew
+# RA-Crew: SEC Filings AI Extraction Crew
 ===================================================
 
 A collaborative crew of AI agents built with CrewAI and LangChain to retrieve, clean, extract, validate, and export non-structured financial data from SEC EDGAR filings (10-K, 10-Q, 8-K, DEF 14A, etc.).
@@ -26,14 +26,14 @@ A collaborative crew of AI agents built with CrewAI and LangChain to retrieve, c
 
 1. **Create a Python 3.12 environment**:
    ```bash
-   conda create -n ra-agent python=3.12
-   conda activate ra-agent
+   conda create -n ra-crew python=3.12
+   conda activate ra-crew
    ```
 
 2. **Clone and navigate to the repository**:
    ```bash
    git clone <your-repo-url>
-   cd RA-Agent
+   cd RA-Crew
    ```
 
 3. **Install dependencies**:
@@ -74,7 +74,7 @@ A collaborative crew of AI agents built with CrewAI and LangChain to retrieve, c
 Launch the interactive wizard for guided usage:
 
 ```bash
-python -m ra_agent.cli --interactive
+python -m ra_crew.cli --interactive
 ```
 
 The wizard will prompt you for:
@@ -90,12 +90,12 @@ The wizard will prompt you for:
 
 Extract CEO compensation from Apple's 2023 proxy statement:
 ```bash
-python -m ra_agent.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation"
+python -m ra_crew.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation"
 ```
 
 Multiple companies and years:
 ```bash
-python -m ra_agent.cli --companies "AAPL:2023,MSFT:2022,TSLA:2023" --filings "10-K,DEF 14A" --metrics "Total CEO compensation,Total CFO compensation"
+python -m ra_crew.cli --companies "AAPL:2023,MSFT:2022,TSLA:2023" --filings "10-K,DEF 14A" --metrics "Total CEO compensation,Total CFO compensation"
 ```
 
 #### Using File Inputs
@@ -120,28 +120,28 @@ Total CFO compensation
 
 Run with files:
 ```bash
-python -m ra_agent.cli --companies-file examples/companies.example --metrics-file examples/metrics.example --filings "DEF 14A"
+python -m ra_crew.cli --companies-file examples/companies.example --metrics-file examples/metrics.example --filings "DEF 14A"
 ```
 
 #### Advanced Options
 
 **Enable CrewAI agent verbosity** (see what agents are doing):
 ```bash
-python -m ra_agent.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation" --use-crew --verbose
+python -m ra_crew.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation" --use-crew --verbose
 ```
 
 **Provide extraction hints** (improve accuracy):
 ```bash
-python -m ra_agent.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation" --hint "Look for executive compensation tables and summary compensation table"
+python -m ra_crew.cli --companies "AAPL:2023" --filings "DEF 14A" --metrics "Total CEO compensation" --hint "Look for executive compensation tables and summary compensation table"
 ```
 
 **Different output formats**:
 ```bash
 # JSON output (default)
-python -m ra_agent.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total CEO compensation" --output-format json
+python -m ra_crew.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total CEO compensation" --output-format json
 
 # CSV output
-python -m ra_agent.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total CEO compensation" --output-format csv
+python -m ra_crew.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total CEO compensation" --output-format csv
 ```
 
 ### Command Line Options
@@ -174,7 +174,7 @@ Results are saved to the `outputs/` directory:
 
 - **Individual results**: `results_{ticker}_{year}.json` or `.csv`
 - **Session summary**: `session_summary.json` with validation reports
-- **Execution logs**: `logs/ra_agent.log` with detailed processing information
+- **Execution logs**: `logs/ra_crew.log` with detailed processing information
 
 ### JSON Output Format
 
@@ -211,9 +211,9 @@ Results are saved to the `outputs/` directory:
 Format and lint code (optional):
 ```bash
 pip install ruff black mypy
-ruff check ra_agent
-black ra_agent  
-mypy ra_agent
+ruff check ra_crew
+black ra_crew  
+mypy ra_crew
 ```
 
 ## Important Notes
@@ -250,7 +250,7 @@ MIT License (see LICENSE file for details).
 
 ### Getting Help
 
-1. Check the logs in `logs/ra_agent.log` for detailed error information
+1. Check the logs in `logs/ra_crew.log` for detailed error information
 2. Run with `--verbose` flag for additional debugging output
 3. Use `--use-crew` to see detailed agent activity and decision-making process
 

@@ -82,7 +82,7 @@ def main(
         verbose = True
 
     if interactive:
-        print(Panel.fit("[bold cyan]RA-Agent Interactive Wizard[/bold cyan]", border_style="cyan"))
+        print(Panel.fit("[bold cyan]RA-Crew Interactive Wizard[/bold cyan]", border_style="cyan"))
         id_input = Prompt.ask("Enter company identifier ([green]ticker[/green] or [yellow]CIK[/yellow])", default="AAPL")
         year = int(Prompt.ask("Enter year", default="2023"))
         filings = Prompt.ask("Filing types (comma-separated)", default="DEF 14A")

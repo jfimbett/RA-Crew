@@ -1,4 +1,4 @@
-"""Main entry point for the RA-Agent package."""
+"""Main entry point for the RA-Crew package."""
 
 from .cli import app
 
