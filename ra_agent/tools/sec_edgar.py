@@ -6,6 +6,7 @@ import time
 import json
 from typing import Dict, List, Optional, Tuple
 import requests
+import random
 from ratelimit import limits, sleep_and_retry
 from tenacity import retry, stop_after_attempt, wait_exponential
 from bs4 import BeautifulSoup
@@ -18,6 +19,11 @@ SEC_RATE_LIMIT_CALLS = 10
 SEC_RATE_LIMIT_PERIOD = 1  # 10 requests per second max per SEC guidance
 
 
+def _extract_email(identity: str) -> Optional[str]:
+    m = re.search(r"[\w\.-]+@[\w\.-]+\.[A-Za-z]{2,}", identity)
+    return m.group(0) if m else None
+
+
 def _base_headers() -> Dict[str, str]:
     # Realistic browser-like headers while preserving SEC-required identity in UA
     # Example UA embeds app name and contact per SEC guidelines
@@ -27,7 +33,7 @@ def _base_headers() -> Dict[str, str]:
         "Chrome/125.0.0.0 Safari/537.36 "
         f"RA-Agent/0.1 (Contact: {settings.edgar_identity})"
     )
-    return {
+    headers = {
         "User-Agent": ua,
         # Note: Accept is set per-request (JSON vs HTML). This is a safe default.
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -39,9 +45,22 @@ def _base_headers() -> Dict[str, str]:
         # Avoid setting Host manually; requests will manage it.
         # Provide a reasonable referer to look more like a browser navigation.
         "Referer": "https://www.sec.gov/edgar/searchedgar/companysearch.html",
+        "Origin": "https://www.sec.gov",
         "Cache-Control": "max-age=0",
         "Pragma": "no-cache",
+        # Client hints used by Chromium-based browsers
+        "sec-ch-ua": '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        # Fetch metadata headers
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
     }
+    email = _extract_email(settings.edgar_identity)
+    if email:
+        headers["From"] = email
+    return headers
 
 
 # Create a session to reuse connections and apply defaults consistently
@@ -62,6 +81,8 @@ def _get(url: str, *, accept: Optional[str] = None, referer: Optional[str] = Non
         headers["Accept"] = accept
     if referer:
         headers["Referer"] = referer
+    # small jitter to avoid bursty patterns
+    time.sleep(random.uniform(0.05, 0.2))
     return SESSION.get(url, headers=headers, timeout=30)
 
 
@@ -120,6 +141,7 @@ def _acc_no_nodash(accession_no: str) -> str:
 
 
 @timeit
+@retry(wait=wait_exponential(multiplier=1, min=1, max=8), stop=stop_after_attempt(3))
 def download_filing(cik: str, accession_no: str, primary_document: str) -> str:
     cik_nozero = str(int(cik))  # remove leading zeros
     acc_no_nodashes = _acc_no_nodash(accession_no)
