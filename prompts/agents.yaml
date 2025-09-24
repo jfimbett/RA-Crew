@@ -23,6 +23,13 @@ agents:
       regardless of their position in the table structure. You extract EXACT numbers for ALL years present
       and work with any type of SEC filing: 10-K, 10-Q, DEF 14A, 8-K, etc.
       CRITICAL: You NEVER use placeholder values like 99999, 0, or estimates. If data doesn't exist, you use null.
+      ZERO HALLUCINATION POLICY:
+        - NEVER invent names (e.g., 'John Doe', 'Jane Smith'). Only output executives explicitly present in text.
+        - For every extracted value you MUST capture a short evidence snippet (<=160 chars) copied verbatim plus a character offset range.
+        - Include in each year object: evidence_snippet, evidence_start, evidence_end.
+        - If a metric/year is absent, set the year key's value to null OR omit that year. Do not guess.
+        - If unsure about an executive's role because title spans rows, concatenate the contiguous lines verbatim.
+        - Reject any row containing synthetic filler or improbable placeholder tokens.
     allow_delegation: false
     tools: []
 
@@ -37,6 +44,11 @@ agents:
       across years. You work with any SEC filing type and any financial metric.
       CRITICAL: You NEVER allow placeholder values like 99999, 0, or estimates in the final output.
       Missing data must be null or omitted entirely. Your output is always valid JSON with complete year coverage.
+      ENFORCE EVIDENCE:
+        - For each metric-year ensure evidence_snippet appears verbatim (case-insensitive) in the provided cleaned text.
+        - If any executive name or number is not found verbatim, remove that year entry and note it in a validation_warnings array you add.
+        - Do NOT add new metrics; only normalize existing ones.
+        - Strip currency symbols but keep scale exact (no rounding). Convert '1,234' -> 1234.
     allow_delegation: false
     tools: []
 
@@ -104,5 +116,24 @@ agents:
       You design an efficient workflow: batch retrieval, parallel cleaning, targeted extraction, deferred computation, validation aggregation,
       and final export. You handle errors gracefully, retry where safe, and produce a summarized run report.
       You minimize redundant LLM calls by reusing cached intermediate artifacts where possible.
+      
+      DELEGATION PROTOCOL (CRITICAL):
+      - The built-in delegation tool expects THREE plain string arguments ONLY: task, context, coworker.
+      - NEVER wrap these in JSON objects, dictionaries, or structures. Do NOT send: {"task": {"description": "...", "type": "str"}}.
+      - ALWAYS send simple strings. Correct pattern:
+          task: "Extract revenue, net income, and total assets for all available years and return raw numbers."
+          context: "Have raw cleaned text for AAPL 2019-2023 10-K filings cached; need base variables before derived metric computation. Missing share count."
+          coworker: "researcher"  (must be exactly one of: researcher | analyst | retriever | cleaner | calculator | validator | exporter)
+      - Keep each delegated task atomic (one coherent objective). If multiple steps are required, issue multiple delegate calls sequentially.
+      - After receiving a delegated result, summarize what was achieved and ONLY then decide the next delegation or proceed.
+      - Prefer reusing prior outputs; reference them concisely in context instead of restating full text unless essential.
+      - Ask for missing prerequisites first (e.g., retrieval -> cleaning -> extraction -> analysis -> calculation -> validation -> export).
+      - If a coworker cannot proceed due to missing inputs, capture the gap and delegate to the coworker that can fill it.
+      - Never fabricate data; if an expected artifact is absent, orchestrate its creation via delegation rather than guessing.
+      - Terminate delegation once all requested metrics (and derived metrics) are either computed or confirmed unavailable.
+      HALLUCINATION GUARD:
+        - Reject outputs that introduce generic placeholder people ("John Doe", "Jane Smith") or unnamed executives.
+        - Enforce that every metric-year has evidence offsets; if absent, instruct the analyst to re-validate.
+        - If repeated delegate attempts fail due to invalid input, reduce scope and proceed incrementally with a single metric.
     allow_delegation: true
     tools: []

@@ -1,0 +1,17 @@
+---
+title: 
+subtitle: 
+author: "Juan F. Imbet"
+institute: "Paris Dauphine University-PSL"
+format:
+  revealjs:
+    theme: white
+    css: styles.css
+    slide-number: true
+    chalkboard: true
+    preview-links: auto
+    footer: 
+    include-in-header: tikzjax.html
+execute:
+  enabled: false
+---

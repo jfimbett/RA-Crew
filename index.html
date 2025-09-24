@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RA-Crew | SEC Filings AI Extraction</title>
+  <meta name="description" content="RA-Crew: Multi-agent AI system for SEC filings retrieval, extraction, and validation" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-alt: #1f2530;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-dim: #9fb1c1;
+      --accent: #2596be;
+      --accent-hover: #33a7d1;
+      --danger: #ff5370;
+      --radius: 14px;
+      --code-bg: #1e2430;
+      --shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      margin: 0;
+      background: linear-gradient(145deg,#0a1016,#131b24 35%,#0d1117 70%);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      max-width: 1180px; margin: 0 auto; padding: 52px 32px 10px;
+    }
+    h1 { font-size: 3rem; margin: 0 0 10px; letter-spacing: .5px; background: linear-gradient(90deg,#25a3d8,#66c2ff); -webkit-background-clip: text; color: transparent; }
+    h2 { margin-top: 3rem; font-size: 2rem; letter-spacing: .5px; }
+    p.lead { font-size: 1.18rem; color: var(--text-dim); max-width: 840px; line-height: 1.5; }
+    nav.actions { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 30px; }
+    a.btn { text-decoration: none; background: var(--accent); color: #fff; padding: 14px 24px; border-radius: 50px; font-weight: 600; font-size: .95rem; letter-spacing: .5px; box-shadow: var(--shadow); transition: .25s background, .25s transform; display: inline-flex; align-items: center; gap: 8px; }
+    a.btn:hover { background: var(--accent-hover); transform: translateY(-2px); }
+    a.btn.secondary { background: var(--panel-alt); color: var(--text-dim); border: 1px solid var(--border); }
+    a.btn.secondary:hover { background: #263042; color: var(--text); }
+    main { max-width: 1180px; margin: 0 auto 140px; padding: 10px 32px 60px; }
+    section.grid { display: grid; gap: 26px; grid-template-columns: repeat(auto-fill,minmax(300px,1fr)); margin-top: 46px; }
+    .card { background: var(--panel); border: 1px solid var(--border); padding: 22px 22px 26px; border-radius: var(--radius); position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 14px; box-shadow: var(--shadow); }
+    .card:before { content:""; position: absolute; inset: 0; background: radial-gradient(circle at 85% 15%,rgba(37,150,190,.25),transparent 60%); opacity: .5; }
+    .card h3 { margin: 0 0 4px; font-size: 1.05rem; letter-spacing: .5px; font-weight: 600; color: #d4ecf7; }
+    .card p { margin: 0; color: var(--text-dim); font-size: .85rem; line-height: 1.45; }
+    ul.features { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+    ul.features li { position: relative; padding-left: 20px; font-size: .82rem; color: var(--text-dim); }
+    ul.features li:before { content:""; width: 8px; height: 8px; background: linear-gradient(90deg,#25a3d8,#4fc3f7); position: absolute; left: 0; top: 6px; border-radius: 2px; }
+    pre { margin: 0; background: var(--code-bg); padding: 16px 18px; border-radius: 10px; overflow: auto; font-size: .8rem; border: 1px solid #283040; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .code-block { display: flex; flex-direction: column; gap: 9px; }
+    .two-col { display: grid; gap: 34px; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); margin-top: 60px; align-items: start; }
+    footer { background: #0a0f14; border-top: 1px solid var(--border); padding: 55px 32px; }
+    footer .inner { max-width: 1180px; margin: 0 auto; display: grid; gap: 50px; grid-template-columns: repeat(auto-fit,minmax(260px,1fr)); }
+    footer h4 { margin: 0 0 16px; font-size: .9rem; letter-spacing: 1px; font-weight: 600; text-transform: uppercase; color: #b8d9e8; }
+    footer a { color: var(--text-dim); text-decoration: none; font-size: .8rem; display: block; margin: 4px 0; }
+    footer a:hover { color: #fff; }
+    .hero-meta { display: flex; gap: 18px; margin-top: 30px; flex-wrap: wrap; }
+    .hero-meta span { background: var(--panel-alt); border: 1px solid var(--border); padding: 8px 14px; font-size: .7rem; font-weight: 600; letter-spacing: 1px; border-radius: 40px; text-transform: uppercase; color: #a5c2d3; }
+    .accent { color: var(--accent); }
+    @media (max-width: 760px) {
+      h1 { font-size: 2.35rem; }
+      header { padding-top: 40px; }
+      nav.actions { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RA-Crew</h1>
+    <p class="lead">A multi-agent AI system for automated extraction, validation, and analysis of SEC EDGAR filings (10-K, 10-Q, 8-K, DEF 14A). Built with CrewAI, LangChain, Retrieval-Augmented Generation, and robust validation layers for research-grade financial data.</p>
+    <div class="hero-meta">
+      <span>MULTI-AGENT</span>
+      <span>RAG ENABLED</span>
+      <span>SEC COMPLIANT</span>
+      <span>OPEN LLM PROVIDERS</span>
+    </div>
+    <nav class="actions">
+      <a class="btn" href="slides/index.html">View Slides</a>
+      <a class="btn secondary" href="https://github.com/">GitHub Repo</a>
+      <a class="btn secondary" href="#quickstart">Quickstart</a>
+    </nav>
+  </header>
+  <main>
+    <h2 id="architecture">Architecture Overview</h2>
+    <section class="grid">
+      <div class="card">
+        <h3>DataRetriever</h3>
+        <p>Authenticated, rate-limited SEC EDGAR access with ticker-to-CIK resolution.</p>
+        <ul class="features">
+          <li>CIK normalization and caching</li>
+          <li>Retry + exponential backoff</li>
+          <li>Multi-year filing traversal</li>
+          <li>HTML / XML / Text acquisition</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>DataCleaner</h3>
+        <p>Preserves semantic structure while removing noise for downstream extraction.</p>
+        <ul class="features">
+          <li>HTML parsing & tag pruning</li>
+          <li>Table boundary preservation</li>
+          <li>Unicode & whitespace normalization</li>
+          <li>Chunk-safe formatting</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>DataExtractor</h3>
+        <p>Hybrid RAG + pattern methods for executive compensation and metric mining.</p>
+        <ul class="features">
+          <li>Query-driven relevance search</li>
+          <li>Compensation table parsing</li>
+          <li>Regex + LLM hybrid scoring</li>
+          <li>Context traceability</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>DataCalculator</h3>
+        <p>Deterministic financial computations executed in sandboxed Python.</p>
+        <ul class="features">
+          <li>Unit-aware math ops</li>
+          <li>Safe evaluation wrapper</li>
+          <li>Derived metric synthesis</li>
+          <li>Error surface transparency</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>DataValidator</h3>
+        <p>Cross-field & longitudinal validation for integrity and plausibility.</p>
+        <ul class="features">
+          <li>Outlier detection</li>
+          <li>Null policy enforcement</li>
+          <li>Monetary unit checks</li>
+          <li>Consistency summaries</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>GraduateAssistant</h3>
+        <p>Coordinator agent orchestrating workflows, retries, and batching.</p>
+        <ul class="features">
+          <li>Adaptive delegation</li>
+          <li>Error recovery logic</li>
+          <li>Throughput optimization</li>
+          <li>Progress multiplexing</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="two-col" id="quickstart">
+      <div>
+        <h2>Quickstart</h2>
+        <div class="card">
+          <div class="code-block">
+            <pre><code># Environment
+conda create -n ra-crew python=3.12
+conda activate ra-crew
+pip install -r requirements.txt
+
+# Configure
+cp .env.example .env
+# edit .env with keys + EDGAR_IDENTITY
+
+# Interactive run
+python -m ra_crew.cli --interactive
+
+# Direct batch
+python -m ra_crew.cli \
+  --companies "AAPL:2023,MSFT:2022" \
+  --filings "DEF 14A" \
+  --metrics "Total CEO compensation,Total CFO compensation" \
+  --use-crew --verbose</code></pre>
+          </div>
+        </div>
+      </div>
+      <div>
+        <h2>Design Principles</h2>
+        <div class="card">
+          <ul class="features">
+            <li><strong>Determinism First</strong>: Calculations executed outside LLM reasoning</li>
+            <li><strong>Traceability</strong>: Every extracted value links to contextual source</li>
+            <li><strong>Resilience</strong>: Retry, rate control, and defensive parsing</li>
+            <li><strong>Extensibility</strong>: Pluggable providers & metric templates</li>
+            <li><strong>Human Review</strong>: Structured JSON artifacts enable auditing</li>
+            <li><strong>Anti-Hallucination</strong>: Null instead of fabricated placeholders</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <h2>Sample JSON Output</h2>
+    <div class="card">
+      <pre><code>{
+  "identifier": "AAPL",
+  "ticker": "AAPL",
+  "cik": "0000320193",
+  "year": 2022,
+  "metric": "Total CEO compensation",
+  "value": "$99,420,097",
+  "context": "Tim Cook received total compensation ...",
+  "form": "DEF 14A"
+}</code></pre>
+    </div>
+
+    <h2>Technology Stack</h2>
+    <section class="grid">
+      <div class="card"><h3>Core</h3><ul class="features"><li>CrewAI Orchestration</li><li>LangChain Tooling</li><li>Python 3.12</li><li>Typer CLI</li></ul></div>
+      <div class="card"><h3>Retrieval</h3><ul class="features"><li>SEC EDGAR API</li><li>Custom RAG Chunker</li><li>Table Preservation</li><li>Keyword Search</li></ul></div>
+      <div class="card"><h3>Validation</h3><ul class="features"><li>Unit Checks</li><li>Cross-period Logic</li><li>Outlier Detection</li><li>Null Semantics</li></ul></div>
+      <div class="card"><h3>Dev Workflow</h3><ul class="features"><li>Git Commit Hygiene</li><li>Copilot Assist</li><li>Modular Agents</li><li>Logging & Audit</li></ul></div>
+    </section>
+  </main>
+  <footer>
+    <div class="inner">
+      <div>
+        <h4>Project</h4>
+        <a href="slides/index.html">Slides</a>
+        <a href="README.md">README</a>
+      </div>
+      <div>
+        <h4>Agents</h4>
+        <a>Retriever</a>
+        <a>Cleaner</a>
+        <a>Extractor</a>
+        <a>Validator</a>
+      </div>
+      <div>
+        <h4>Execution</h4>
+        <a>CLI Wizard</a>
+        <a>Batch Processing</a>
+        <a>RAG System</a>
+      </div>
+      <div>
+        <h4>Credits</h4>
+        <a>Developed with GitHub Copilot</a>
+        <a>GPT-5 & Claude Sonnet 4 Assisted</a>
+        <a>MIT Licensed</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -54,14 +54,19 @@ A collaborative crew of AI agents built with CrewAI and LangChain to retrieve, c
    cp .env.example .env
    ```
    
-   Edit `.env` and provide your values:
+   Edit `.env` and provide your values (DO NOT use fabricated identity; SEC requires real contact info):
    ```bash
    # Required: Choose your LLM provider (openai, azure-openai, anthropic, groq)
    LLM_PROVIDER=openai
    OPENAI_API_KEY=your_openai_key_here
    
-   # Required: SEC identity (replace with your real name and email)
-   EDGAR_IDENTITY=Your Name your.email@domain.com
+   # Required: SEC identity components (must be real)
+   SEC_APP_NAME=RA-Crew
+   SEC_CONTACT_EMAIL=your.email@domain.com
+   # Optional additional descriptor
+   SEC_IDENTITY_EXTRA=academic research
+   # (Legacy var still read if present, but new split vars are preferred)
+   # EDGAR_IDENTITY=Your Name your.email@domain.com
    
    # Optional: Logging level
    LOG_LEVEL=INFO
@@ -144,6 +149,34 @@ python -m ra_crew.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total 
 python -m ra_crew.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total CEO compensation" --output-format csv
 ```
 
+**Derived metrics & calculations**:
+```bash
+python -m ra_crew.cli \
+   --companies "AAPL:2023" \
+   --filings "DEF 14A,10-K" \
+   --metrics "Total CEO compensation,Revenue" \
+   --derived-metrics "CEO Pay to Revenue" \
+   --calc-expr "CEO Pay to Revenue=Total_CEO_compensation / Revenue" \
+   --use-crew
+```
+
+Using files:
+```
+examples/derived.example
+CEO Pay to Revenue
+
+examples/calculations.example
+CEO Pay to Revenue=Total_CEO_compensation / Revenue
+```
+```bash
+python -m ra_crew.cli --companies "AAPL:2023" \
+   --filings "DEF 14A,10-K" \
+   --metrics "Total CEO compensation,Revenue" \
+   --derived-metrics-file examples/derived.example \
+   --calc-expr-file examples/calculations.example \
+   --use-crew
+```
+
 ### Command Line Options
 
 | Option | Description | Example |
@@ -158,6 +191,43 @@ python -m ra_crew.cli --companies "AAPL:2023" --filings "10-K" --metrics "Total 
 | `--interactive` | Launch interactive wizard | Flag |
 | `--verbose` | Increase verbosity | Flag |
 | `--use-crew` | Enable CrewAI agents (shows activity) | Flag |
+| `--derived-metrics` | Comma-separated derived metrics | `CEO Pay to Revenue` |
+| `--derived-metrics-file` | File with derived metrics per line | `examples/derived.example` |
+| `--calc-expr` | NAME=EXPR (repeatable) | `CEO Pay to Revenue=Total_CEO_compensation / Revenue` |
+| `--calc-expr-file` | File with NAME=EXPR lines | `examples/calculations.example` |
+
+## SEC Compliance & Headers
+
+All requests to SEC EDGAR use headers built exclusively from environment variables you supply:
+
+- `SEC_APP_NAME` and `SEC_CONTACT_EMAIL` are mandatory. The code raises an error if missing.
+- A strict `User-Agent` string of the form: `APP_NAME (Contact: email; extra)` is sent.
+- No fabricated or placeholder contact information is ever injected by the code.
+- Rate limiting defaults to 10 calls / 1 second (official guidance) and can be tuned via `SEC_RATE_CALLS`, `SEC_RATE_PERIOD` if needed.
+
+Example override in `.env`:
+```
+SEC_RATE_CALLS=8
+SEC_RATE_PERIOD=1
+```
+
+## Hallucination Safeguards
+
+To ensure ONLY real data from filings is used:
+
+- Extracted metric-year entries must include a verbatim evidence snippet.
+- Post-run evidence validator removes any entry whose executive name or numeric value does not appear in the cleaned filing corpus.
+- Placeholder names like `John Doe` / `Jane Smith` are auto-detected and purged.
+- Coordinator agent instructions prevent delegation that could introduce synthetic records.
+
+Validation report is embedded under `evidence_validation` in output JSON.
+
+Manual spot check example (Windows):
+```
+findstr /i "Tim Cook" data\filings\*\*\cleaned.txt
+findstr /i "99420097" data\filings\*\*\cleaned.txt
+```
+If a value or name is not found, that entry should not appear in the validated results.
 
 ## Ticker and CIK Support
 

@@ -1,0 +1,331 @@
+---
+title: "RA-Crew: AI-Powered SEC Filings Extraction"
+subtitle: "Multi-Agent Crew for Financial Research Automation"
+author: "Juan F. Imbet"
+institute: "Paris Dauphine University-PSL"
+format:
+  revealjs:
+    theme: white
+    css: styles.css
+    slide-number: true
+    chalkboard: true
+    preview-links: auto
+    footer: "RA-Crew: SEC Filings AI Extraction | Built with GitHub Copilot + GPT-5/Claude Sonnet 4"
+    include-in-header: tikzjax.html
+execute:
+  enabled: false
+---
+
+## Overview
+
+Today we'll explore:
+
+- **Foundations**: How Large Language Models work
+- **Evolution**: From traditional LLMs to reasoning models
+- **Innovation**: Understanding AI agents and multi-agent systems
+- **Implementation**: The RA-Crew architecture for SEC filings extraction
+
+---
+
+# Understanding Large Language Models
+
+## How LLMs Work
+
+- **Transformer Architecture**: Self-attention mechanisms process text sequences in parallel
+- **Pre-training**: Models learn language patterns from massive text corpora (billions of tokens)
+- **Token Prediction**: Generate text by predicting the next most likely token given context
+- **Emergent Abilities**: Complex reasoning and knowledge emerge from scale and training
+
+---
+
+## Traditional LLMs vs. Reasoning Models
+
+**Traditional LLMs (GPT-3/4, Claude)**:
+- **Single-pass generation**: Produce output in one forward pass
+- **Limited reasoning**: Can struggle with complex multi-step problems
+- **Pattern matching**: Rely heavily on memorized patterns from training data
+- **No self-correction**: Cannot revise or improve initial responses
+
+**Reasoning Models (o1, Claude-3.5-Sonnet)**:
+- **Chain-of-thought**: Break down problems into logical steps
+- **Self-reflection**: Can critique and improve their own reasoning
+- **Multi-step planning**: Handle complex tasks requiring sequential thinking
+- **Error correction**: Identify and fix mistakes through iterative refinement
+
+---
+
+## What are AI Agents?
+
+**Core Characteristics**:
+- **Autonomy**: Can operate independently without constant human guidance
+- **Reactivity**: Respond to environmental changes and new information
+- **Proactivity**: Take initiative to achieve goals and solve problems
+- **Tool Usage**: Leverage external tools, APIs, and data sources to extend capabilities
+
+**Key Capabilities**:
+- **Planning**: Break down complex tasks into manageable subtasks
+- **Memory**: Maintain context and learn from previous interactions
+- **Communication**: Collaborate with other agents and humans
+- **Decision Making**: Choose appropriate actions based on goals and constraints
+
+---
+
+# RA-Crew Architecture
+
+## Project Evolution
+
+**From Challenge to Solution**:
+- **Problem**: Manual SEC filing analysis is time-consuming and error-prone
+- **Vision**: Automated extraction of financial data using AI agents
+- **Implementation**: CrewAI framework with specialized agents for each task
+- **Enhancement**: GitHub Copilot + GPT-5/Claude Sonnet 4 for development acceleration
+
+---
+
+## Multi-Agent Crew Design
+
+**7 Specialized Agents**:
+
+1. **DataRetriever**: Connects to SEC EDGAR database with rate limiting
+2. **DataCleaner**: Processes HTML/XML and preserves table structures  
+3. **DataExtractor**: Uses RAG and LLM extraction for financial metrics
+4. **DataCalculator**: Performs mathematical operations on extracted data
+
+---
+
+## Multi-Agent Crew Design (cont.)
+
+**Remaining Agents**:
+
+5. **DataValidator**: Validates units, consistency, and cross-company checks
+6. **DataExporter**: Formats output as JSON/CSV with structured data
+7. **GraduateAssistant**: Orchestrates workflow and delegates tasks efficiently
+
+**Agent Collaboration**:
+- **Sequential Processing**: Each agent builds on the previous agent's output
+- **Error Handling**: Agents can request help or retry failed operations
+- **Quality Assurance**: Multiple validation layers ensure data accuracy
+- **Scalability**: Process multiple companies and years in parallel
+
+---
+
+## Technical Architecture
+
+```python
+# Core CrewAI Setup
+from crewai import Agent, Task, Crew
+from langchain.tools import Tool
+
+class SECDataCrew:
+    def __init__(self):
+        self.agents = self.create_agents()
+        self.tasks = self.create_tasks()
+        self.crew = Crew(
+            agents=self.agents,
+            tasks=self.tasks,
+            verbose=True
+        )
+```
+
+- **CrewAI Framework**: Manages agent coordination and task delegation
+- **LangChain Integration**: Provides LLM interfaces and tool abstractions
+- **RAG Implementation**: Intelligent document chunking for large SEC filings
+- **Rate Limiting**: Respects SEC EDGAR API guidelines (10 requests/second)
+
+---
+
+## Key Tools and Capabilities
+
+**SEC Data Retrieval**:
+- **Ticker-to-CIK Mapping**: Automatic conversion using local cache + SEC API
+- **Filing Type Support**: 10-K, 10-Q, 8-K, DEF 14A, and other SEC forms
+- **Multi-year Processing**: Extract historical data across multiple periods
+- **Compliance**: Proper headers and rate limiting for SEC requirements
+
+**Text Processing**:
+- **HTML/XML Cleaning**: BeautifulSoup processing with table preservation
+- **RAG System**: 2000-character chunks with 200-character overlap
+- **Table Structure**: Maintains financial table formatting for accurate extraction
+- **Anti-hallucination**: Explicit validation to prevent fake data generation
+
+---
+
+## CLI Interface and User Experience
+
+```bash
+# Interactive Mode (Guided)
+python -m ra_crew.cli --interactive
+
+# Direct Command-line Usage
+python -m ra_crew.cli --companies "AAPL:2023,MSFT:2022" \
+  --filings "DEF 14A" --metrics "Total CEO compensation" \
+  --use-crew --verbose
+
+# File-based Batch Processing
+python -m ra_crew.cli --companies-file companies.txt \
+  --metrics-file metrics.txt --output-format json
+```
+
+- **Interactive Wizard**: Guided setup for beginners with prompts and defaults
+- **Batch Processing**: Handle multiple companies and metrics efficiently  
+- **Agent Verbosity**: `--use-crew` flag shows detailed agent activities
+- **Progress Tracking**: Real-time progress bars and validation reports
+
+---
+
+## Data Extraction Results
+
+**Apple Inc. (AAPL) 2023 Executive Compensation**:
+
+```json
+{
+  "identifier": "AAPL",
+  "ticker": "AAPL",
+  "cik": "0000320193", 
+  "year": 2022,
+  "metric": "Total CEO compensation",
+  "value": "$99,420,097",
+  "context": "Tim Cook received total compensation...",
+  "form": "DEF 14A"
+}
+```
+
+- **Multi-year Data**: Extracts 2022, 2021, 2020 compensation automatically
+- **Executive Roles**: Handles CEO, CFO, and other named executive officers
+- **Structured Output**: JSON format with validation and metadata
+- **Context Preservation**: Maintains source information for verification
+
+---
+
+## Advanced Features
+
+**RAG-Enhanced Processing**:
+- **Document Chunking**: Intelligent segmentation of large SEC filings
+- **Keyword Extraction**: Focuses on financial terms and compensation data
+- **Context Search**: Finds relevant sections for specific metrics
+- **Table Boundary Detection**: Preserves financial table structures
+
+**Quality Assurance**:
+- **Unit Validation**: Ensures monetary values are in correct units (millions, billions)
+- **Cross-company Checks**: Validates data consistency across similar companies
+- **Missing Data Handling**: Uses null values instead of placeholder numbers
+- **Multi-row Parsing**: Handles executive titles spanning multiple table rows
+
+---
+
+## Installation and Setup
+
+**Environment Setup**:
+```bash
+# Create Python 3.12 environment
+conda create -n ra-crew python=3.12
+conda activate ra-crew
+
+# Install dependencies  
+pip install -r requirements.txt
+
+# Configure environment
+cp .env.example .env
+# Edit .env with API keys and SEC identity
+```
+
+- **Anaconda Integration**: Recommended Python distribution for data science
+- **Multiple LLM Providers**: OpenAI, Anthropic, Groq, Azure OpenAI support
+- **SEC Compliance**: Required EDGAR_IDENTITY for SEC API access
+- **Environment Variables**: Secure API key management with .env files
+
+---
+
+## Development Workflow
+
+**GitHub Copilot Enhancement**:
+- **Code Generation**: AI-assisted development of agent behaviors and tools
+- **Documentation**: Automated README and code documentation generation  
+- **Debugging**: Intelligent error detection and resolution suggestions
+- **Refactoring**: Automated code improvements and pattern recognition
+
+**Version Control**:
+- **Git Integration**: Proper commit history for all development phases
+- **Branch Management**: Feature branches for major enhancements
+- **Code Quality**: Automated linting with ruff, black, and mypy
+- **Collaboration**: Clear commit messages and documentation standards
+
+---
+
+## Project Impact and Applications
+
+**Financial Research Applications**:
+- **Academic Research**: Automated data collection for empirical studies
+- **Investment Analysis**: Due diligence and company comparison automation
+- **Regulatory Compliance**: Systematic monitoring of executive compensation
+- **Risk Assessment**: Automated extraction of risk factors and financial metrics
+
+**Technical Contributions**:
+- **Multi-agent Architecture**: Scalable framework for document processing tasks
+- **SEC Integration**: Compliant and efficient access to regulatory filings
+- **RAG Implementation**: Effective handling of large document processing
+- **User Experience**: Both technical and non-technical user interfaces
+
+---
+
+## Future Enhancements
+
+**Planned Improvements**:
+- **Additional Filing Types**: Support for 8-K, S-1, and international filings
+- **Real-time Monitoring**: Automated alerts for new filings and data changes
+- **Advanced Analytics**: Trend analysis and comparative metrics across time
+- **Web Interface**: Browser-based GUI for non-technical users
+
+**Scalability Enhancements**:
+- **Cloud Deployment**: AWS/Azure deployment for enterprise usage
+- **Database Integration**: PostgreSQL/MongoDB for large-scale data storage
+- **API Development**: RESTful API for external system integration
+- **Performance Optimization**: Parallel processing and caching improvements
+
+---
+
+## Conclusion
+
+**Key Achievements**:
+- **Successful Multi-agent Implementation**: 7 specialized agents working collaboratively
+- **Production-ready System**: Handles real SEC filings with robust error handling
+- **User-friendly Interface**: Both CLI and interactive modes for different skill levels
+- **Quality Assurance**: Comprehensive validation and anti-hallucination measures
+
+**Technical Innovation**:
+- **RAG Integration**: Effective processing of large financial documents
+- **Agent Verbosity**: Transparent AI decision-making process
+- **GitHub Copilot Enhancement**: AI-assisted development workflow
+- **Comprehensive Documentation**: Clear setup and usage instructions
+
+---
+
+## Demo and Q&A
+
+**Live Demonstration**:
+- Interactive CLI wizard walkthrough
+- Real-time agent execution with verbosity
+- SEC filing processing and data extraction
+- JSON output validation and export
+
+**Questions and Discussion**:
+- Technical implementation details
+- Potential applications and use cases  
+- Integration with existing research workflows
+- Future development and collaboration opportunities
+
+---
+
+## Resources and Links
+
+**Project Repository**:
+- **GitHub**: [RA-Crew Project Repository]
+- **Documentation**: Comprehensive README with setup instructions
+- **Examples**: Sample companies and metrics files included
+- **Issue Tracking**: Bug reports and feature requests welcome
+
+**Technologies Used**:
+- **CrewAI**: Multi-agent framework for task delegation
+- **LangChain**: LLM integration and tool abstractions
+- **SEC EDGAR**: Official SEC filing database API
+- **GitHub Copilot**: AI-assisted development platform

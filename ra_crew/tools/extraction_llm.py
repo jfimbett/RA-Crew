@@ -154,10 +154,29 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
     section = _grab("section")
     evidence = _grab("evidence")
 
+    # Derive evidence offsets if possible
+    evidence_start = -1
+    evidence_end = -1
+    evidence_snippet = evidence
+    if evidence:
+        try:
+            # Case-insensitive search first, then refine for exact casing if found
+            lowered_text = text.lower()
+            lowered_e = evidence.lower()
+            idx = lowered_text.find(lowered_e)
+            if idx != -1:
+                evidence_start = idx
+                evidence_end = idx + len(evidence)
+        except Exception:  # pragma: no cover
+            pass
+
     return {
         "metric": metric,
         "value": value,
-        "context": evidence,
+        "context": evidence,  # backward compatibility
+        "evidence_snippet": evidence_snippet,
+        "evidence_start": evidence_start,
+        "evidence_end": evidence_end,
         "section": section,
         "currency": currency,
         "year": year,

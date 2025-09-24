@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import threading
 from typing import Any, Dict, List, Optional
+import re
 import yaml
 
 _PROMPT_CACHE_LOCK = threading.Lock()
@@ -76,28 +77,66 @@ def get_task_def(task_id: str, prompts: Optional[Dict[str, Any]] = None) -> Dict
             return t
     raise PromptNotFoundError(f"Task id '{task_id}' not found in tasks.yaml")
 
-def interpolate(template: str, **kwargs: Any) -> str:
-    """Interpolate a template string using str.format with provided kwargs.
+_PLACEHOLDER_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
+_ALLOWED_PLACEHOLDERS = {
+    "metrics",
+    "ticker",
+    "years",
+    "filing_types",
+    "hint",
+    "sec_filing_content",
+    "derived_metrics",
+    "calculation_expressions",
+    "output_format",
+}
 
-    Raises:
-        InterpolationError if a required key is missing.
+def interpolate(template: str, **kwargs: Any) -> str:
+    """Safely interpolate placeholders of the form {name}.
+
+    Only replaces braces that contain a single valid identifier present in kwargs.
+    Leaves any other brace usage untouched (e.g. literal JSON braces or occurrences
+    like `dependencies{}`) to avoid Python ``str.format`` IndexError such as
+    "Replacement index 0 out of range" triggered by bare ``{}``.
+
+    If an allowed placeholder (in _ALLOWED_PLACEHOLDERS) appears in the template
+    but is not provided via kwargs, an InterpolationError is raised to alert the caller.
     """
     if not template:
         return template
-    try:
-        return template.format(**kwargs)
-    except KeyError as e:
-        missing = e.args[0]
+
+    missing: List[str] = []
+
+    def _repl(match: re.Match) -> str:  # type: ignore[name-defined]
+        name = match.group(1)
+        # If it's an allowed placeholder but not provided, record missing and keep original
+        if name in _ALLOWED_PLACEHOLDERS and name not in kwargs:
+            missing.append(name)
+            return match.group(0)
+        # If provided, substitute
+        if name in kwargs:
+            return str(kwargs[name])
+        # Otherwise leave unchanged (literal braces)
+        return match.group(0)
+
+    result = _PLACEHOLDER_PATTERN.sub(_repl, template)
+    if missing:
         raise InterpolationError(
-            f"Missing placeholder '{missing}' for template interpolation. Provided keys: {list(kwargs.keys())}"
-        ) from e
+            f"Missing placeholder values for: {missing}. Provided keys: {list(kwargs.keys())}"
+        )
+    return result
 
 def build_agent_objects(model_name: str, verbose: bool, prompts: Optional[Dict[str, Any]] = None):
     """Return dict of agent_id -> kwargs for Agent construction (excluding llm)."""
     from crewai import Agent
+    # Lazy import of tool mapping so this module can be used before tools exist in some contexts
+    try:  # pragma: no cover - defensive import
+        from ..tools.agent_tools import AGENT_TOOL_MAP
+    except Exception:  # noqa: BLE001
+        AGENT_TOOL_MAP = {}
     agents = {}
     prompts = prompts or load_prompts()
     for a in prompts['agents']:
+        tools = AGENT_TOOL_MAP.get(a['id'], [])
         agents[a['id']] = Agent(
             name=a['name'],
             role=a['role'],
@@ -106,7 +145,7 @@ def build_agent_objects(model_name: str, verbose: bool, prompts: Optional[Dict[s
             llm=model_name,
             verbose=verbose,
             allow_delegation=a.get('allow_delegation', False),
-            tools=[]  # future: map tool names
+            tools=tools,
         )
     return agents
 

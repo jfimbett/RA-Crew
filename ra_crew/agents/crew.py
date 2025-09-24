@@ -127,14 +127,23 @@ def build_crew() -> Crew:
 
     # Determine manager (coordinator) if present
     manager_agent = agent_objs.get("coordinator")
-    crew = Crew(
-        agents=list(agent_objs.values()),
-        tasks=list(task_objs.values()),
-        process=Process.hierarchical if manager_agent else Process.sequential,
-        manager=manager_agent,  # type: ignore[arg-type]
-        verbose=verbose_mode,
-        output_log_file=log_file,
-    )
+    all_agents = list(agent_objs.values())
+    crew_kwargs: Dict[str, Any] = {
+        "agents": all_agents,
+        "tasks": list(task_objs.values()),
+        "verbose": verbose_mode,
+        "output_log_file": log_file,
+    }
+    if manager_agent:
+        # CrewAI hierarchical requires manager_agent or manager_llm; older 'manager' param kept for back-compat
+        crew_kwargs["process"] = Process.hierarchical
+        # Exclude manager from standard agents list per validation rule
+        crew_kwargs["agents"] = [a for a in all_agents if a is not manager_agent]
+        crew_kwargs["manager_agent"] = manager_agent  # new API
+        crew_kwargs["manager"] = manager_agent        # backward compatibility
+    else:
+        crew_kwargs["process"] = Process.sequential
+    crew = Crew(**crew_kwargs)
     # Attach agent map for later task re-interpolation at kickoff
     crew._agent_map = agent_objs  # type: ignore[attr-defined]
     crew._prompts = prompts       # cache prompts for reuse
@@ -157,6 +166,7 @@ class SECDataCrew:
         output_format = inputs.get("output_format", "json")
         derived_metrics = inputs.get("derived_metrics", [])
         calculation_expressions = inputs.get("calculation_expressions", {})
+        strict_validation = inputs.get("strict_validation", False)
         
         logger.info(f"Starting SEC data retrieval for {ticker}")
         
@@ -229,7 +239,7 @@ class SECDataCrew:
         
         logger.info("Crew processing completed")
         
-        # Export results to JSON/CSV like the direct processing does
+        # Export results to JSON/CSV like the direct processing does (with optional derived computations)
         try:
             import orjson
             import json
@@ -242,6 +252,53 @@ class SECDataCrew:
             except json.JSONDecodeError:
                 logger.warning("Crew result is not valid JSON, storing as text")
                 crew_result_json = None
+
+            # Attempt derived metric computation if expressions provided and we have structured JSON
+            derived_computed = None
+            if crew_result_json and calculation_expressions:
+                try:
+                    # Heuristic: treat top-level keys that are in metrics list as primitive metric maps
+                    primitive: Dict[str, Dict[str, Any]] = {}
+                    for m in metrics:
+                        if isinstance(crew_result_json, dict) and m in crew_result_json:
+                            primitive[m] = crew_result_json[m]
+                    if primitive:
+                        from ..tools.calculator import compute_derived_metrics
+                        derived_computed = compute_derived_metrics(calculation_expressions, primitive)
+                        logger.info("Computed derived metrics: %s", list(derived_computed.keys()))
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"Failed computing derived metrics: {e}")
+
+            # Hallucination guard: verify extracted executives/values appear in corpus
+            evidence_validation = None
+            if crew_result_json and isinstance(crew_result_json, dict):
+                try:
+                    from ..tools.validation import validate_extraction_evidence
+                    corpus_texts = [d.get("text", "") for d in sec_data.get("documents", [])]
+                    evidence_validation = validate_extraction_evidence(crew_result_json, corpus_texts)
+                    removed = evidence_validation.get("removed_entries", [])
+                    if removed:
+                        logger.warning("Evidence validator removed %d hallucinated metric-year entries", len(removed))
+                        # Replace crew_result_json metrics with cleaned subset
+                        cleaned_metrics = evidence_validation.get("kept_metrics", {})
+                        if cleaned_metrics:
+                            crew_result_json = cleaned_metrics
+                    # Synthetic placeholder guard
+                    placeholder_tokens = {"john doe", "jane smith", "sample executive"}
+                    joined_lower = json.dumps(crew_result_json).lower() if crew_result_json else ""
+                    if any(tok in joined_lower for tok in placeholder_tokens):
+                        logger.warning("Detected placeholder executive names; purging all suspect entries via revalidation")
+                        # Force full removal of any metric-year referencing placeholder names
+                        # Re-run validation which will drop absent evidence
+                        evidence_validation = validate_extraction_evidence(crew_result_json, corpus_texts)
+                        cleaned_metrics = evidence_validation.get("kept_metrics", {})
+                        crew_result_json = cleaned_metrics
+                    if strict_validation and removed:
+                        logger.error("Strict mode: removed entries detected; marking run as failed.")
+                        # add sentinel to result for upstream handler
+                        crew_result_json["__strict_failure__"] = True
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"Evidence validation failed: {e}")
             
             # Create structured result data
             result_data = {
@@ -256,7 +313,10 @@ class SECDataCrew:
                 "crew_result_raw": str(result),  # Keep raw for debugging
                 "processing_method": "CrewAI with RAG",
                 "documents_processed": len(sec_data.get("documents", [])),
-                "rag_query": search_query
+                "rag_query": search_query,
+                "derived_metrics": derived_computed,
+                "evidence_validation": evidence_validation,
+                "strict_failed": bool(crew_result_json.get("__strict_failure__")) if isinstance(crew_result_json, dict) else False,
             }
             
             # Save individual result

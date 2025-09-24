@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Sequence
 
 
 def _extract_numeric_value(value_str: str) -> float:
@@ -118,4 +118,101 @@ def validate_values(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "valid": len(issues) == 0,
         "metrics_found": list(value_stats.keys()),
         "summary": f"{valid_rows}/{total_rows} rows have values, {len(issues)} critical issues, {len(warnings)} warnings"
+    }
+
+
+def validate_extraction_evidence(extracted: Dict[str, Any], cleaned_texts: Sequence[str]) -> Dict[str, Any]:
+    """Validate that every executive name and numeric value in extracted structure appears verbatim in at least one cleaned text.
+
+    Parameters
+    ----------
+    extracted : dict
+        Nested structure mapping metrics -> years -> {value, name, title, evidence_snippet?}
+    cleaned_texts : sequence[str]
+        Collection of cleaned filing contents.
+
+    Returns
+    -------
+    dict
+        Report with keys: removed_entries (list), missing_evidence (list), value_mismatches (list), name_not_found (list),
+        kept_metrics (dict), summary (str).
+    """
+    lowered_corpus = [t.lower() for t in cleaned_texts]
+
+    def _in_corpus(fragment: str) -> bool:
+        if not fragment:
+            return False
+        frag = fragment.strip().lower()
+        if len(frag) < 2:
+            return False
+        return any(frag in c for c in lowered_corpus)
+
+    removed_entries: List[Dict[str, Any]] = []
+    missing_evidence: List[str] = []
+    value_mismatches: List[str] = []
+    name_not_found: List[str] = []
+
+    cleaned_output: Dict[str, Any] = {}
+
+    for metric, years_dict in extracted.items():
+        if not isinstance(years_dict, dict):
+            continue
+        new_years: Dict[str, Any] = {}
+        for year, payload in years_dict.items():
+            if payload is None:
+                new_years[year] = None
+                continue
+            if not isinstance(payload, dict):
+                continue
+            name = str(payload.get("name", ""))
+            value = payload.get("value")
+            evidence = payload.get("evidence_snippet") or payload.get("context") or ""
+            evidence_start = payload.get("evidence_start", -1)
+            evidence_end = payload.get("evidence_end", -1)
+            # Basic numeric presence check
+            numeric_token = None
+            if isinstance(value, (int, float)):
+                numeric_token = f"{value:,}".replace(",", "")
+            elif isinstance(value, str):
+                numeric_token = value.replace(",", "").strip()
+            # Validate evidence snippet
+            evidence_ok = _in_corpus(evidence) if evidence else False
+            name_ok = _in_corpus(name)
+            value_ok = _in_corpus(numeric_token) if numeric_token else False
+
+            problems: List[str] = []
+            if not name_ok and name:
+                name_not_found.append(f"{metric} {year} name '{name}' not found verbatim")
+                problems.append("name")
+            if numeric_token and not value_ok:
+                value_mismatches.append(f"{metric} {year} value '{value}' not found verbatim in corpus")
+                problems.append("value")
+            if not evidence_ok:
+                missing_evidence.append(f"{metric} {year} missing or non-verbatim evidence snippet")
+                problems.append("evidence")
+
+            if problems:
+                removed_entries.append({"metric": metric, "year": year, "reasons": problems})
+            else:
+                # Keep only whitelisted keys plus offsets to avoid propagating unexpected hallucinated fields
+                kept = dict(payload)
+                kept["evidence_start"] = evidence_start
+                kept["evidence_end"] = evidence_end
+                kept["evidence_snippet"] = evidence
+                new_years[year] = kept
+        if new_years:
+            cleaned_output[metric] = new_years
+
+    summary = (
+        f"Removed {len(removed_entries)} metric-year entries; "
+        f"missing_evidence={len(missing_evidence)}, name_not_found={len(name_not_found)}, value_mismatches={len(value_mismatches)}"
+    )
+
+    return {
+        "removed_entries": removed_entries,
+        "missing_evidence": missing_evidence,
+        "value_mismatches": value_mismatches,
+        "name_not_found": name_not_found,
+        "kept_metrics": cleaned_output,
+        "summary": summary,
     }

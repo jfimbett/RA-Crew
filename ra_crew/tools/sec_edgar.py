@@ -15,8 +15,8 @@ from ..config import settings
 from ..utils.logging_utils import timeit
 
 
-SEC_RATE_LIMIT_CALLS = 10
-SEC_RATE_LIMIT_PERIOD = 1  # 10 requests per second max per SEC guidance
+SEC_RATE_LIMIT_CALLS = int(os.getenv("SEC_RATE_CALLS", "10"))
+SEC_RATE_LIMIT_PERIOD = int(os.getenv("SEC_RATE_PERIOD", "1"))  # default SEC published guidance
 
 
 def _extract_email(identity: str) -> Optional[str]:
@@ -24,48 +24,48 @@ def _extract_email(identity: str) -> Optional[str]:
     return m.group(0) if m else None
 
 
-def _base_headers() -> Dict[str, str]:
-    # Realistic browser-like headers while preserving SEC-required identity in UA
-    # Example UA embeds app name and contact per SEC guidelines
-    ua = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36 "
-        f"RA-Crew/0.1 (Contact: {settings.edgar_identity})"
-    )
+def build_sec_headers() -> Dict[str, str]:
+    """Construct SEC-compliant headers strictly from environment variables.
+
+    Required env vars:
+      - SEC_APP_NAME: short identifier of your application (e.g., RA-Crew)
+      - SEC_CONTACT_EMAIL: valid email address for contact per SEC guidelines
+    Optional env vars:
+      - SEC_IDENTITY_EXTRA: free-form note (e.g., research purpose)
+
+    We purposely DO NOT fabricate or guess values. If mandatory variables are
+    missing, we raise an exception to force explicit user configuration.
+    """
+    app = os.getenv("SEC_APP_NAME")
+    email = os.getenv("SEC_CONTACT_EMAIL")
+    extra = os.getenv("SEC_IDENTITY_EXTRA", "")
+
+    if not app or not email:
+        raise RuntimeError(
+            "Missing SEC_APP_NAME or SEC_CONTACT_EMAIL env vars. Populate these in .env to proceed."
+        )
+    ua = f"{app} (Contact: {email}{'; ' + extra if extra else ''})"
+
     headers = {
         "User-Agent": ua,
-        # Note: Accept is set per-request (JSON vs HTML). This is a safe default.
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
         "DNT": "1",
         "Upgrade-Insecure-Requests": "1",
-        # Avoid setting Host manually; requests will manage it.
-        # Provide a reasonable referer to look more like a browser navigation.
         "Referer": "https://www.sec.gov/edgar/searchedgar/companysearch.html",
         "Origin": "https://www.sec.gov",
         "Cache-Control": "max-age=0",
         "Pragma": "no-cache",
-        # Client hints used by Chromium-based browsers
-        "sec-ch-ua": '"Chromium";v="125", "Not.A/Brand";v="24", "Google Chrome";v="125"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        # Fetch metadata headers
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Dest": "document",
     }
-    email = _extract_email(settings.edgar_identity)
-    if email:
-        headers["From"] = email
+    headers["From"] = email
     return headers
 
 
 # Create a session to reuse connections and apply defaults consistently
 SESSION = requests.Session()
-SESSION.headers.update(_base_headers())
+SESSION.headers.update(build_sec_headers())
 
 
 EDGAR_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -81,6 +81,9 @@ def _get(url: str, *, accept: Optional[str] = None, referer: Optional[str] = Non
         headers["Accept"] = accept
     if referer:
         headers["Referer"] = referer
+    # Ensure headers still contain current identity (in case env rotated mid-run)
+    if "User-Agent" not in SESSION.headers:
+        SESSION.headers.update(build_sec_headers())
     # small jitter to avoid bursty patterns
     time.sleep(random.uniform(0.05, 0.2))
     return SESSION.get(url, headers=headers, timeout=30)

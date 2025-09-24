@@ -1,0 +1,4 @@
+cd C:\Users\jfimb\Dropbox\RA-Crew
+git add _site/slides/index.html
+git commit -m "Add lecture index.html"
+git push

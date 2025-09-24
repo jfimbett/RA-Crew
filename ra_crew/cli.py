@@ -64,6 +64,11 @@ def main(
     interactive: bool = typer.Option(False, help="Launch interactive wizard"),
     verbose: bool = typer.Option(False, help="Increase verbosity"),
     use_crew: bool = typer.Option(False, help="Use CrewAI agents (shows agent activity)"),
+    derived_metrics: Optional[str] = typer.Option(None, help="Comma-separated list of derived metrics to compute"),
+    derived_metrics_file: Optional[str] = typer.Option(None, help="File with derived metrics, one per line"),
+    calc_expr: Optional[str] = typer.Option(None, help="Single calculation expression in the form NAME=EXPR (can repeat)"),
+    calc_expr_file: Optional[str] = typer.Option(None, help="File with lines NAME=EXPR for derived calculations"),
+    strict: bool = typer.Option(False, help="Fail run if any hallucinated entries are removed or placeholders detected"),
 ):
     """Run the SEC filings crew over the specified companies and years."""
     # Initialize logging with appropriate level
@@ -104,6 +109,31 @@ def main(
         metric_list.extend([m.strip() for m in metrics.split(",") if m.strip()])
     if metrics_file:
         metric_list.extend(_read_lines(metrics_file))
+
+    # Derived metrics collection
+    derived_list: List[str] = []
+    if derived_metrics:
+        derived_list.extend([m.strip() for m in derived_metrics.split(",") if m.strip()])
+    if derived_metrics_file:
+        derived_list.extend(_read_lines(derived_metrics_file))
+
+    # Calculation expressions mapping NAME=EXPR
+    calc_map = {}
+    def _parse_calc_line(line: str):
+        if "=" not in line:
+            raise typer.BadParameter(f"Expected NAME=EXPR format in calculation expression line: {line}")
+        name, expr = line.split("=", 1)
+        return name.strip(), expr.strip()
+    if calc_expr:
+        # Allow multiple --calc-expr usages (Typer passes last) -> support comma delim inside? Keep simple
+        # Accept semicolon separated expressions optionally
+        for part in [p for p in calc_expr.replace(";", ",").split(",") if p.strip()]:
+            n, e = _parse_calc_line(part)
+            calc_map[n] = e
+    if calc_expr_file:
+        for line in _read_lines(calc_expr_file):
+            n, e = _parse_calc_line(line)
+            calc_map[n] = e
 
     if not pairs:
         raise typer.BadParameter("Provide companies via --companies or --companies-file")
@@ -192,8 +222,11 @@ def main(
                         "years": [year],
                         "filing_types": filing_types,
                         "metrics": metric_list,
+                        "derived_metrics": derived_list,
+                        "calculation_expressions": calc_map,
                         "hint": hint,
-                        "output_format": output_format
+                        "output_format": output_format,
+                        "strict_validation": strict,
                     }
                     
                     # Execute the crew - this will show agent activity
@@ -211,6 +244,14 @@ def main(
                         "filing_types": filing_types,
                         "metrics": metric_list
                     }
+                    # If strict mode: inspect evidence_validation in saved artifact (crew stores file separately)
+                    if strict:
+                        # Attempt to parse evidence_validation from crew_result string if present
+                        # We rely on the saved outputs; here just mark potential failure if placeholders remain
+                        if any(p in str(crew_result).lower() for p in ["john doe", "jane smith", "sample executive"]):
+                            result_data["strict_failed"] = True
+                        else:
+                            result_data["strict_failed"] = False
                     results.append(result_data)
                     
                     if verbose:
@@ -350,11 +391,14 @@ def main(
         
         pbar.close()
 
-    # Save a session summary
+    # Strict mode early abort BEFORE persisting any session artifacts
+    if any(r.get("strict_failed") for r in results):
+        raise SystemExit("Strict validation failed: hallucinated placeholders detected; aborting before writing outputs.")
+
+    # Save a session summary only if not strict-failed
     os.makedirs(settings.outputs_dir, exist_ok=True)
     out_path = os.path.join(settings.outputs_dir, "session_summary.json")
     import orjson
-
     with open(out_path, "wb") as f:
         f.write(orjson.dumps(results, option=orjson.OPT_INDENT_2))
     typer.echo(f"Saved summary to {out_path}")
