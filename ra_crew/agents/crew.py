@@ -125,10 +125,13 @@ def build_crew() -> Crew:
         log_file = os.path.join(settings.outputs_dir, "crew_execution.log")
         logger.info(f"CrewAI execution will be logged to {log_file}")
 
+    # Determine manager (coordinator) if present
+    manager_agent = agent_objs.get("coordinator")
     crew = Crew(
         agents=list(agent_objs.values()),
         tasks=list(task_objs.values()),
-        process=Process.sequential,
+        process=Process.hierarchical if manager_agent else Process.sequential,
+        manager=manager_agent,  # type: ignore[arg-type]
         verbose=verbose_mode,
         output_log_file=log_file,
     )

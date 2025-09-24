@@ -261,6 +261,16 @@ If you add new placeholders, ensure they are passed in the crew kickoff inputs a
 - Invalid YAML (indentation) => loader exception on startup.
 - Large `{sec_filing_content}` may exceed model context; tune RAG chunking in `rag.py` if needed.
 
+### Hierarchical Coordination (GraduateAssistant)
+
+The `GraduateAssistant` agent (id: `coordinator`) acts as a hierarchical manager when present. The crew automatically switches to `Process.hierarchical` and designates this agent as the manager. The manager:
+
+- Generates a delegation plan (`coordination_plan` task) before execution of operational tasks.
+- Determines ordering and potential parallelization of: retrieval → cleaning → extraction → computation → validation → export.
+- Can incorporate retries or pruning if filings are missing.
+
+To modify manager logic, edit the `coordination_plan` task block in `prompts/tasks.yaml`.
+
 ## Batch Input Example
 
 An example company list file is provided for multi-company processing:

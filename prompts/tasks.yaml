@@ -10,6 +10,20 @@
 # Runtime will supply these via interpolation.
 
 tasks:
+  - id: coordination_plan
+    agent: coordinator
+    description: |
+      You are the GraduateAssistant manager agent. First, design an execution plan for ticker {ticker} over years {years} and forms {filing_types}.
+      OBJECTIVE: Produce a delegation blueprint before any other task runs.
+      INCLUDE:
+      - Ordered task list (retrieve_filings -> clean_filings -> extract_metrics -> compute_metrics (if {derived_metrics}) -> validate_all -> export_results)
+      - Parallelization opportunities (e.g., cleaning after each retrieval batch)
+      - Retry strategy & fallback if a filing is missing or corrupted
+      - Resource usage minimization (reuse cleaned text, avoid duplicate downloads)
+      - Which metrics require primitives for derived calculations: {derived_metrics}
+      OUTPUT: JSON plan with keys: tasks[], dependencies{}, parallel_groups[], notes, risk_mitigation.
+    expected_output: JSON object with keys tasks, dependencies, parallel_groups, notes, risk_mitigation
+
   - id: retrieve_filings
     agent: retriever
     description: |
@@ -83,18 +97,6 @@ tasks:
       OUTPUT: JSON object describing written artifact (path, format, record_count).
     expected_output: JSON object with export path, format, and metadata
 
-  - id: coordination_plan
-    agent: coordinator
-    context: [retrieve_filings, clean_filings, extract_metrics, compute_metrics, validate_all, export_results]
-    description: |
-      Summarize the full multi-stage pipeline execution for {ticker} over years {years}.
-      Provide:
-      - Task dependency graph
-      - Timing summary if available
-      - Any retries or errors encountered
-      - Recommendations for optimization (e.g., caching, parallelism)
-      OUTPUT: JSON run report.
-    expected_output: JSON run report with pipeline summary, timings, errors, optimization suggestions
 
   - id: research_task
     agent: researcher
