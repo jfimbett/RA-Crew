@@ -4,6 +4,8 @@ import re
 from bs4 import BeautifulSoup
 import pandas as pd
 from pandas.errors import EmptyDataError
+from io import StringIO
+from ..tools.sec_edgar import is_xml_content
 from typing import Dict
 from ..utils.logging_utils import timeit
 
@@ -35,14 +37,17 @@ def extract_tables(html: str, max_tables: int = 50) -> list[dict]:
     tables: list[dict] = []
     if not html or "<table" not in html.lower():
         return tables
+    # If content is XML/XBRL, do not attempt HTML table extraction
+    if is_xml_content(html):
+        return tables
     try:
-        dfs = pd.read_html(html, flavor="lxml")
+        dfs = pd.read_html(StringIO(html), flavor="lxml")
     except (ValueError, EmptyDataError):  # no tables or parse issues
         return tables
     except Exception:
         # As a fallback, try the html5lib parser
         try:
-            dfs = pd.read_html(html, flavor="bs4")
+            dfs = pd.read_html(StringIO(html), flavor="bs4")
         except Exception:
             return tables
     for i, df in enumerate(dfs[:max_tables]):

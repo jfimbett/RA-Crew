@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from crewai import Agent, Task, Crew, Process
 
 from ..config import settings
 from ..utils.logging_utils import setup_logging
-from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
+from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text, is_xml_content
 from ..tools.cleaning import clean_text, extract_tables
 from ..tools.extraction_llm import llm_extract_metric
 from ..tools.calculator import compute_metric
@@ -23,17 +24,16 @@ def _llm_config() -> Dict[str, Any]:
     }
 
 
-import os
-
-
 def _agent(name: str, role: str, goal: str, backstory: str, tools: Optional[List[Any]] = None, allow_delegation: bool = False) -> Agent:
+    # Get verbosity from environment or default to True for agents
+    verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
     return Agent(
         name=name,
         role=role,
         goal=goal,
         backstory=backstory,
         llm=_llm_config(),
-        verbose=True,
+        verbose=verbose_mode,
         tools=tools or [],
         allow_delegation=allow_delegation,
     )
@@ -41,6 +41,11 @@ def _agent(name: str, role: str, goal: str, backstory: str, tools: Optional[List
 
 def build_crew() -> Crew:
     setup_logging()
+    
+    # Enable LangChain debugging if crew verbosity is on
+    if os.getenv("CREW_VERBOSE", "false").lower() == "true":
+        os.environ["LANGCHAIN_VERBOSE"] = "true"
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"  # Avoid external tracing
 
     data_retriever = _agent(
         name="DataRetriever",
@@ -124,12 +129,17 @@ def build_crew() -> Crew:
             text_path = os.path.join(base_dir, "cleaned.txt")
             with open(text_path, "w", encoding="utf-8") as fh:
                 fh.write(cleaned_text)
+            xml_path = None
+            if is_xml_content(html):
+                xml_path = os.path.join(base_dir, "source.xml")
+                with open(xml_path, "w", encoding="utf-8") as xf:
+                    xf.write(html)
             import orjson
             tables_path = os.path.join(base_dir, "tables.json")
             with open(tables_path, "wb") as fh:
                 fh.write(orjson.dumps(tables, option=orjson.OPT_INDENT_2))
             out.append({
-                "meta": {**f, "cik": cik, "paths": {"text": text_path, "tables": tables_path}},
+                "meta": {**f, "cik": cik, "paths": {"text": text_path, "tables": tables_path, "xml": xml_path}},
                 "html": html,
                 "text": cleaned_text,
             })
@@ -166,7 +176,15 @@ def build_crew() -> Crew:
             text = doc["text"]
             meta = doc["meta"]
             for m in metrics:
-                res = llm_extract_metric(text, m, hint=hint, form=meta.get("form"))
+                xml_content = None
+                xml_p = meta.get("paths", {}).get("xml")
+                if xml_p and os.path.exists(xml_p):
+                    try:
+                        with open(xml_p, "r", encoding="utf-8") as xf:
+                            xml_content = xf.read()
+                    except Exception:
+                        xml_content = None
+                res = llm_extract_metric(text, m, hint=hint, form=meta.get("form"), xml=xml_content)
                 rows.append(
                     {
                         "ticker": inputs["ticker"],
@@ -220,6 +238,15 @@ def build_crew() -> Crew:
         context={"runner": _run_export},
     )
 
+    # Get verbosity setting from environment
+    verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
+    
+    # Simple step callback to show agent activity in real-time (if supported)
+    def step_callback(*args, **kwargs):
+        if args:
+            print(f"[AGENT STEP] {args[0]}")
+        print("-" * 30)
+    
     crew = Crew(
         agents=[
             graduate_assistant,
@@ -232,6 +259,8 @@ def build_crew() -> Crew:
         ],
         tasks=[t_retrieve, t_clean, t_extract, t_calc, t_validate, t_export],
         process=Process.sequential,
-        verbose=True,
+        verbose=verbose_mode,
+        output_log_file="crew_execution.txt" if verbose_mode else None,
+        step_callback=step_callback if verbose_mode else None,
     )
     return crew

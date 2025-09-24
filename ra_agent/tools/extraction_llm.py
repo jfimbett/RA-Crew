@@ -46,9 +46,13 @@ def _build_llm(cfg: LLMConfig):
 
 
 SYSTEM_PROMPT = (
-    "You are a meticulous financial data extraction agent. Read the provided filing text and extract the requested metric. "
-    "Do not guess. If not present, return found=false. "
-    "Output strictly as a compact JSON object with keys: found (bool), value (string, raw as shown), currency (string or empty), year (string or empty), section (string or empty), evidence (short snippet)."
+    "You are a meticulous financial data extraction agent. Your job is to thoroughly search the ENTIRE document for the requested metric. "
+    "The hint provided is guidance to help you understand what to look for, but you must examine all relevant sections, tables, and data throughout the document. "
+    "Do NOT just grab the first number you see near the hint words. Look for the most complete, accurate, and contextually appropriate value. "
+    "Search compensation tables, summary tables, footnotes, and detailed breakdowns. "
+    "If multiple values exist for the same metric (e.g., different years), extract the most recent or specifically requested one. "
+    "Do not guess. If genuinely not present after thorough search, return found=false. "
+    "Output strictly as a compact JSON object with keys: found (bool), value (string, raw as shown), currency (string or empty), year (string or empty), section (string or empty), evidence (short snippet showing context)."
 )
 
 
@@ -65,7 +69,7 @@ def _chunk(text: str, max_chars: int) -> List[str]:
 
 
 @timeit
-def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form: Optional[str] = None) -> Dict[str, Any]:
+def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form: Optional[str] = None, xml: Optional[str] = None) -> Dict[str, Any]:
     """Use an LLM to extract a metric from filing text without regex.
 
     Returns dict with keys: metric, value, context, section, currency, year, confidence (heuristic), raw_json.
@@ -82,11 +86,24 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
     intro = "\n".join(user_intro_parts)
 
     # Process in chunks to stay within context
-    best: Dict[str, Any] = {"found": False}
+    all_results: List[Dict[str, Any]] = []
+    xml_excerpt = (xml or "").strip()
+    if xml_excerpt:
+        xml_excerpt = xml_excerpt[:6000]
+    
     for chunk in _chunk(text, max_chars=12000):
-        prompt = (
-            f"{intro}\n\nText (excerpt):\n" + chunk[:12000] + "\n\nReturn JSON only."
-        )
+        if xml_excerpt:
+            prompt = (
+                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, and data.\n\n"
+                f"XML (excerpt):\n{xml_excerpt}\n\nText (excerpt):\n" + chunk[:8000] + 
+                "\n\nIf XML is present, prefer numeric facts from it. Search thoroughly before responding. Return JSON only."
+            )
+        else:
+            prompt = (
+                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, and data.\n\n"
+                f"Text (excerpt):\n" + chunk[:12000] + 
+                "\n\nSearch thoroughly before responding. Return JSON only."
+            )
         try:
             resp = llm.invoke([
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -96,16 +113,21 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
         except Exception as e:  # pragma: no cover
             content = "{}"
 
-        # Avoid strict JSON parsing to reduce failures; do simple extraction
-        # Expect keys like: found, value, currency, year, section, evidence
+        # Check if this chunk found something
         found_flag = "\"found\": true" in content.lower()
         if found_flag:
-            # Heuristic: take this result as best and stop
-            best = {
+            all_results.append({
                 "found": True,
                 "raw_json": content,
-            }
-            break
+                "chunk_index": len(all_results)
+            })
+    
+    # If multiple results, pick the one with the most detailed evidence or most recent
+    best: Dict[str, Any] = {"found": False}
+    if all_results:
+        # For now, take the last result found (often more complete/recent)
+        # TODO: Could implement more sophisticated selection logic
+        best = all_results[-1]
 
     if not best.get("found"):
         return {
