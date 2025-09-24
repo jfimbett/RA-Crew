@@ -159,7 +159,22 @@ def download_filing(cik: str, accession_no: str, primary_document: str) -> str:
 
 @timeit
 def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
+    """Convert HTML or XML content to plain text.
+
+    Auto-detects XML (e.g., XBRL or XML filings) and uses an XML parser to avoid
+    XMLParsedAsHTMLWarning; otherwise uses an HTML parser.
+    """
+    content_head = html.lstrip()[:512].lower()
+    # Simple XML detection: XML declaration, top-level xml tag, or xmlns present without <html>
+    is_xml = content_head.startswith("<?xml") or content_head.startswith("<xml") or (
+        "xmlns" in content_head and "<html" not in content_head
+    )
+    parser = "xml" if is_xml else "lxml"
+    try:
+        soup = BeautifulSoup(html, parser)
+    except Exception:
+        # Fallback to lxml HTML parser if XML parser not available
+        soup = BeautifulSoup(html, "lxml")
     for el in soup(["script", "style", "noscript"]):
         el.decompose()
     text = soup.get_text("\n")
