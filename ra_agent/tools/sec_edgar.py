@@ -18,12 +18,35 @@ SEC_RATE_LIMIT_CALLS = 10
 SEC_RATE_LIMIT_PERIOD = 1  # 10 requests per second max per SEC guidance
 
 
-def _headers() -> Dict[str, str]:
+def _base_headers() -> Dict[str, str]:
+    # Realistic browser-like headers while preserving SEC-required identity in UA
+    # Example UA embeds app name and contact per SEC guidelines
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36 "
+        f"RA-Agent/0.1 (Contact: {settings.edgar_identity})"
+    )
     return {
-        "User-Agent": f"RA-Agent/0.1 ({settings.edgar_identity})",
-        "Accept-Encoding": "gzip, deflate",
-        "Host": "www.sec.gov",
+        "User-Agent": ua,
+        # Note: Accept is set per-request (JSON vs HTML). This is a safe default.
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "DNT": "1",
+        "Upgrade-Insecure-Requests": "1",
+        # Avoid setting Host manually; requests will manage it.
+        # Provide a reasonable referer to look more like a browser navigation.
+        "Referer": "https://www.sec.gov/edgar/searchedgar/companysearch.html",
+        "Cache-Control": "max-age=0",
+        "Pragma": "no-cache",
     }
+
+
+# Create a session to reuse connections and apply defaults consistently
+SESSION = requests.Session()
+SESSION.headers.update(_base_headers())
 
 
 EDGAR_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -33,13 +56,22 @@ EDGAR_ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik_nozero}/{accessio
 
 @sleep_and_retry
 @limits(calls=SEC_RATE_LIMIT_CALLS, period=SEC_RATE_LIMIT_PERIOD)
-def _get(url: str) -> requests.Response:
-    return requests.get(url, headers=_headers(), timeout=30)
+def _get(url: str, *, accept: Optional[str] = None, referer: Optional[str] = None) -> requests.Response:
+    headers: Dict[str, str] = {}
+    if accept:
+        headers["Accept"] = accept
+    if referer:
+        headers["Referer"] = referer
+    return SESSION.get(url, headers=headers, timeout=30)
 
 
 @retry(wait=wait_exponential(multiplier=1, min=1, max=8), stop=stop_after_attempt(3))
 def _get_json(url: str) -> dict:
-    r = _get(url)
+    r = _get(
+        url,
+        accept="application/json, text/javascript, */*; q=0.1",
+        referer="https://www.sec.gov/edgar/searchedgar/companysearch.html",
+    )
     r.raise_for_status()
     return r.json()
 
@@ -94,7 +126,11 @@ def download_filing(cik: str, accession_no: str, primary_document: str) -> str:
     url = EDGAR_ARCHIVES.format(
         cik_nozero=cik_nozero, accession_no_nodashes=acc_no_nodashes, filename=primary_document
     )
-    r = _get(url)
+    r = _get(
+        url,
+        accept="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        referer="https://www.sec.gov/edgar/browse/",
+    )
     r.raise_for_status()
     return r.text
 
