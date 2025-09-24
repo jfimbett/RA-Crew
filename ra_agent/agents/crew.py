@@ -8,7 +8,7 @@ from ..config import settings
 from ..utils.logging_utils import setup_logging
 from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
 from ..tools.cleaning import clean_text
-from ..tools.extraction import extract_metric
+from ..tools.extraction_llm import llm_extract_metric
 from ..tools.calculator import compute_metric
 from ..tools.validation import validate_values
 from ..tools.exporter import export_rows
@@ -150,19 +150,20 @@ def build_crew() -> Crew:
 
     def _run_extract(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
         metrics: list[str] = inputs.get("metrics", [])
+        hint: Optional[str] = inputs.get("hint")  # optional free-text hint
         rows: list[dict] = []
         for doc in prev.get("cleaned", []):
             text = doc["text"]
             meta = doc["meta"]
             for m in metrics:
-                res = extract_metric(text, m)
+                res = llm_extract_metric(text, m, hint=hint, form=meta.get("form"))
                 rows.append(
                     {
                         "ticker": inputs["ticker"],
                         "year": int(meta["filingDate"][:4]),
                         "metric": res["metric"],
                         "value": res["value"],
-                        "context": res["context"],
+                        "context": res.get("context", ""),
                         "form": meta["form"],
                     }
                 )

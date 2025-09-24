@@ -15,7 +15,7 @@ from .config import settings
 from .utils.logging_utils import setup_logging
 from .tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
 from .tools.cleaning import clean_text
-from .tools.extraction import extract_metric, extract_metric_with_hint_text
+from .tools.extraction_llm import llm_extract_metric
 from .tools.validation import validate_values
 from .tools.exporter import export_rows
 from .utils.identifiers import is_cik, normalize_cik, ticker_to_cik
@@ -150,13 +150,8 @@ def main(
             rows = []
             for doc in cleaned:
                 for m in metric_list:
-                    # If a free-text hint is provided, use it; otherwise fallback to heuristic
-                    if hint:
-                        res = extract_metric_with_hint_text(doc["text"], m, hint)
-                        if not res.get("value"):
-                            res = extract_metric(doc["text"], m)
-                    else:
-                        res = extract_metric(doc["text"], m)
+                    # Use LLM-based extraction (no regex), with optional free-text hint
+                    res = llm_extract_metric(doc["text"], m, hint=hint, form=doc["meta"].get("form"))
                     rows.append(
                         {
                             "identifier": identifier,
