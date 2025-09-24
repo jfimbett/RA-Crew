@@ -7,6 +7,7 @@ from crewai import Agent, Task, Crew, Process
 
 from ..config import settings
 from ..utils.logging_utils import setup_logging, logger
+from ..utils.prompt_loader import load_prompts, build_agent_objects, build_task_objects
 from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text, is_xml_content
 from ..tools.cleaning import clean_text, extract_tables
 from ..tools.extraction_llm import llm_extract_metric
@@ -17,23 +18,8 @@ from ..tools.rag import SimpleRAG
 from ..utils.identifiers import is_cik, normalize_cik, ticker_to_cik
 
 
-def _agent(name: str, role: str, goal: str, backstory: str, tools: Optional[List[Any]] = None, allow_delegation: bool = False) -> Agent:
-    # Get verbosity from environment or default to True for agents
-    verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
-    
-    # Use string model name instead of dict - CrewAI will handle the LLM creation
-    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
-    
-    return Agent(
-        name=name,
-        role=role,
-        goal=goal,
-        backstory=backstory,
-        llm=model_name,  # Pass string model name, not dict
-        verbose=verbose_mode,
-        tools=tools or [],
-        allow_delegation=allow_delegation,
-    )
+def _agent(*args, **kwargs):  # Backward compatibility placeholder (no longer used directly)
+    raise RuntimeError("_agent factory is deprecated. Agents now loaded from prompts/agents.yaml")
 
 
 def retrieve_sec_data(ticker: str, years: List[int], filing_types: List[str]) -> Dict[str, Any]:
@@ -103,170 +89,42 @@ def retrieve_sec_data(ticker: str, years: List[int], filing_types: List[str]) ->
 
 
 def build_crew() -> Crew:
-    """Build a CrewAI crew for financial data extraction that actually works."""
+    """Build a CrewAI crew using externalized YAML prompts."""
     setup_logging()
-    
+
     # Enable LangChain debugging if crew verbosity is on
-    if os.getenv("CREW_VERBOSE", "false").lower() == "true":
+    verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
+    if verbose_mode:
         os.environ["LANGCHAIN_VERBOSE"] = "true"
         os.environ["LANGCHAIN_TRACING_V2"] = "false"  # Avoid external tracing
 
-    # Create agents with proper CrewAI patterns and tool access
-    researcher = _agent(
-        name="FinancialResearcher",
-        role="SEC Filing Data Extractor",
-        goal="Extract specific financial metrics as JSON from SEC filings for all available years",
-        backstory=(
-            "You are an expert at reading SEC filings and extracting financial data from complex table structures. "
-            "You understand that executive titles often span multiple rows in tables (e.g., 'Luca Maestri' on row 1, "
-            "'Senior Vice President,' on row 2, 'Chief Financial Officer' on row 3). "
-            "You always search for functional titles like 'Chief Financial Officer', 'Chief Executive Officer' "
-            "regardless of their position in the table structure. You extract EXACT numbers for ALL years present "
-            "and work with any type of SEC filing: 10-K, 10-Q, DEF 14A, 8-K, etc. "
-            "CRITICAL: You NEVER use placeholder values like 99999, 0, or estimates. If data doesn't exist, you use null."
-        ),
-        # For now, no tools - agents will work with provided data
-        tools=[]
-    )
+    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
 
-    analyst = _agent(
-        name="DataAnalyst", 
-        role="JSON Validator and Formatter",
-        goal="Validate extracted multi-year data and output clean JSON with numerical values",
-        backstory=(
-            "You are a JSON formatting specialist for multi-year financial data. You ensure that "
-            "extracted data contains ALL available years from the filing, properly formatted as valid JSON. "
-            "You remove formatting (commas, dollar signs) from numbers and validate data consistency "
-            "across years. You work with any SEC filing type and any financial metric. "
-            "CRITICAL: You NEVER allow placeholder values like 99999, 0, or estimates in the final output. "
-            "Missing data must be null or omitted entirely. Your output is always valid JSON with complete year coverage."
-        )
-    )
+    # Load prompts and build agents
+    prompts = load_prompts()
+    agent_objs = build_agent_objects(model_name=model_name, verbose=verbose_mode, prompts=prompts)
 
-    # Create tasks with dynamic descriptions that use input variables
-    research_task = Task(
-        description=(
-            "IMPORTANT: SEC filings often contain compensation or financial data from MULTIPLE YEARS. "
-            "For example, proxy statements contain 3+ years of data, 10-K filings contain historical data. "
-            "\nYou will be provided with actual SEC filing content. "
-            "Extract the requested metrics: {metrics} from the SEC filing text provided below. "
-            "Filing details: Ticker {ticker}, Filing Year {years}, Filing types {filing_types} "
-            "Hint: {hint} "
-            "\n\nSEC FILING CONTENT:\n{sec_filing_content}\n\n"
-            "CRITICAL INSTRUCTIONS:\n"
-            "1. Look for compensation tables, financial statements, or relevant sections\n"
-            "2. IMPORTANT: Executive titles may span multiple rows in tables. For example:\n"
-            "   Row 1: 'Luca Maestri' 'Senior Vice President,'\n"
-            "   Row 2: [blank] 'Chief Financial Officer'\n"
-            "   This person is the CFO - look for 'Chief Financial Officer' anywhere near the name\n"
-            "3. Search for executives by their functional titles: CEO, CFO, COO, CTO, etc.\n"
-            "4. Extract data for ALL YEARS available in the document (typically 3+ years)\n"
-            "5. Extract EXACT numbers from tables - DO NOT estimate or round\n"
-            "6. For each requested metric, provide data for ALL available years in JSON format:\n"
-            "{{\n"
-            "  \"Total CEO compensation\": {{\n"
-            "    \"2022\": {{\n"
-            "      \"value\": [exact number],\n"
-            "      \"name\": \"[executive name]\",\n"
-            "      \"title\": \"[full title from table]\",\n"
-            "      \"source\": \"[table/section name]\"\n"
-            "    }},\n"
-            "    \"2021\": {{\n"
-            "      \"value\": [exact number],\n"
-            "      \"name\": \"[executive name]\",\n"
-            "      \"title\": \"[full title from table]\",\n"
-            "      \"source\": \"[table/section name]\"\n"
-            "    }}\n"
-            "  }},\n"
-            "  \"Total CFO compensation\": {{\n"
-            "    \"2022\": {{\n"
-            "      \"value\": [exact number],\n"
-            "      \"name\": \"[executive name]\",\n"
-            "      \"title\": \"[full title from table]\",\n"
-            "      \"source\": \"[table/section name]\"\n"
-            "    }}\n"
-            "  }}\n"
-            "}}\n"
-            "CRITICAL: If data is NOT found for a specific year or metric, use null (not 99999, not 0, not any made-up number). "
-            "Only include years where you actually found the data in the filing. "
-            "REMEMBER: Look for 'Chief Financial Officer', 'Chief Executive Officer', etc. even if they appear on separate rows from the name."
-        ),
-        agent=researcher,
-        expected_output=(
-            "JSON object with requested metrics, each containing data for ALL years found in the filing, including executives whose titles span multiple table rows"
-        )
-    )
+    # Placeholder interpolation values will be provided later (empty defaults here)
+    interpolation_defaults = {
+        "metrics": "[]",
+        "ticker": "",
+        "years": "[]",
+        "filing_types": "[]",
+        "hint": "",
+        "sec_filing_content": "",
+    }
+    task_objs = build_task_objects(agent_objs, verbose=verbose_mode, interpolation_kwargs=interpolation_defaults, prompts=prompts)
 
-    analysis_task = Task(
-        description=(
-            "Validate the extracted JSON data and ensure it contains ALL available years and executives. "
-            "Your job is to:\n"
-            "1. Verify the numbers match what's in the SEC filing content for ALL years\n"
-            "2. Ensure the JSON is valid and well-structured\n"
-            "3. Check that years are complete (don't miss any years from the original data)\n"
-            "4. IMPORTANT: Verify that executives with multi-row titles were found correctly:\n"
-            "   - CFO might be listed as 'Senior Vice President, Chief Financial Officer'\n"
-            "   - Look for anyone with 'Chief Financial Officer' in their title\n"
-            "   - Look for anyone with 'Chief Executive Officer' in their title\n"
-            "5. Output the final JSON with clean numerical values (no commas, dollar signs)\n"
-            "\nYour output must be valid JSON only, nothing else.\n"
-            "CRITICAL: NEVER use placeholder values like 99999, 0, or any made-up numbers. "
-            "If data is not found, use null or omit the year entirely. "
-            "Only include years where actual data exists in the filing.\n"
-            "Format with ALL available years and proper executive identification:\n"
-            "{{\n"
-            "  \"Total CEO compensation\": {{\n"
-            "    \"2022\": {{\n"
-            "      \"value\": 99420097,\n"
-            "      \"name\": \"Tim Cook\",\n"
-            "      \"title\": \"Chief Executive Officer\",\n"
-            "      \"source\": \"Summary Compensation Table\"\n"
-            "    }},\n"
-            "    \"2021\": {{\n"
-            "      \"value\": 98734394,\n"
-            "      \"name\": \"Tim Cook\",\n"
-            "      \"title\": \"Chief Executive Officer\",\n"
-            "      \"source\": \"Summary Compensation Table\"\n"
-            "    }}\n"
-            "  }},\n"
-            "  \"Total CFO compensation\": {{\n"
-            "    \"2022\": {{\n"
-            "      \"value\": 27151798,\n"
-            "      \"name\": \"Luca Maestri\",\n"
-            "      \"title\": \"Senior Vice President, Chief Financial Officer\",\n"
-            "      \"source\": \"Summary Compensation Table\"\n"
-            "    }},\n"
-            "    \"2021\": {{\n"
-            "      \"value\": 26978503,\n"
-            "      \"name\": \"Luca Maestri\",\n"
-            "      \"title\": \"Senior Vice President, Chief Financial Officer\",\n"
-            "      \"source\": \"Summary Compensation Table\"\n"
-            "    }}\n"
-            "  }}\n"
-            "}}\n"
-            "If data for 2023 doesn't exist, DO NOT include a 2023 entry. If an entire metric is not found, use null for the whole metric."
-        ),
-        agent=analyst,
-        expected_output=(
-            "Valid JSON object with clean numerical values for each requested metric across ALL available years, correctly identifying executives with multi-row titles"
-        ),
-        context=[research_task]
-    )
-
-    # Get verbosity setting from environment
-    verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
-    
     # Create log file path
     log_file = None
     if verbose_mode:
         os.makedirs(settings.outputs_dir, exist_ok=True)
         log_file = os.path.join(settings.outputs_dir, "crew_execution.log")
         logger.info(f"CrewAI execution will be logged to {log_file}")
-    
-    # Create crew with proper configuration
+
     crew = Crew(
-        agents=[researcher, analyst],
-        tasks=[research_task, analysis_task],
+        agents=list(agent_objs.values()),
+        tasks=list(task_objs.values()),
         process=Process.sequential,
         verbose=verbose_mode,
         output_log_file=log_file,
@@ -333,16 +191,29 @@ class SECDataCrew:
         
         logger.info(f"RAG extracted {len(sec_filing_content)} characters of relevant content from {len(sec_data['documents'])} documents")
         
-        # Update inputs with RAG-extracted relevant content
-        crew_inputs = {
-            **inputs,
-            "sec_filing_content": sec_filing_content
-        }
+        # Rebuild tasks with actual interpolation values now that we have content
+        try:
+            prompts = load_prompts()
+            verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
+            model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
+            # Rebuild agents (reuse existing model/verbosity) and tasks with real placeholders
+            agent_objs = build_agent_objects(model_name=model_name, verbose=verbose_mode, prompts=prompts)
+            interpolation_values = {
+                "metrics": metrics,
+                "ticker": ticker,
+                "years": years,
+                "filing_types": filing_types,
+                "hint": hint,
+                "sec_filing_content": sec_filing_content,
+            }
+            task_objs = build_task_objects(agent_objs, verbose=verbose_mode, interpolation_kwargs=interpolation_values, prompts=prompts)
+            # Replace crew tasks with re-interpolated ones preserving order
+            self.crew.tasks = list(task_objs.values())
+        except Exception as e:
+            logger.error(f"Failed to rebuild tasks with interpolation: {e}")
         
-        logger.info(f"Processing relevant sections with CrewAI")
-        
-        # Execute the crew with RAG-extracted relevant content
-        result = self.crew.kickoff(inputs=crew_inputs)
+        logger.info("Processing relevant sections with CrewAI (interpolated tasks)")
+        result = self.crew.kickoff(inputs=inputs)
         
         logger.info("Crew processing completed")
         

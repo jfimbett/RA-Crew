@@ -1,0 +1,116 @@
+# Task prompt definitions with placeholders.
+# Schema:
+# tasks:
+#   - id: unique id (used in code)
+#     agent: agent id reference
+#     description: | multi-line description (supports placeholders)
+#     expected_output: short text
+#     context: [optional list of task ids whose outputs feed this one]
+# Placeholders available: {metrics}, {ticker}, {years}, {filing_types}, {hint}, {sec_filing_content}
+# Runtime will supply these via interpolation.
+
+tasks:
+  - id: research_task
+    agent: researcher
+    description: |
+      IMPORTANT: SEC filings often contain compensation or financial data from MULTIPLE YEARS.
+      For example, proxy statements contain 3+ years of data, 10-K filings contain historical data.
+      You will be provided with actual SEC filing content.
+      Extract the requested metrics: {metrics} from the SEC filing text provided below.
+      Filing details: Ticker {ticker}, Filing Year(s) {years}, Filing types {filing_types}
+      Hint: {hint}
+
+      SEC FILING CONTENT:
+      {sec_filing_content}
+
+      CRITICAL INSTRUCTIONS:
+      1. Look for compensation tables, financial statements, or relevant sections
+      2. IMPORTANT: Executive titles may span multiple rows in tables. For example:
+         Row 1: 'Luca Maestri' 'Senior Vice President,'
+         Row 2: [blank] 'Chief Financial Officer'
+         This person is the CFO - look for 'Chief Financial Officer' anywhere near the name
+      3. Search for executives by their functional titles: CEO, CFO, COO, CTO, etc.
+      4. Extract data for ALL YEARS available in the document (typically 3+ years)
+      5. Extract EXACT numbers from tables - DO NOT estimate or round
+      6. For each requested metric, provide data for ALL available years in JSON format:
+         {
+           "Total CEO compensation": {
+             "2022": {
+               "value": [exact number],
+               "name": "[executive name]",
+               "title": "[full title from table]",
+               "source": "[table/section name]"
+             },
+             "2021": {
+               "value": [exact number],
+               "name": "[executive name]",
+               "title": "[full title from table]",
+               "source": "[table/section name]"
+             }
+           },
+           "Total CFO compensation": {
+             "2022": {
+               "value": [exact number],
+               "name": "[executive name]",
+               "title": "[full title from table]",
+               "source": "[table/section name]"
+             }
+           }
+         }
+      CRITICAL: If data is NOT found for a specific year or metric, use null (not 99999, not 0, not any made-up number).
+      Only include years where you actually found the data in the filing.
+      REMEMBER: Look for 'Chief Financial Officer', 'Chief Executive Officer', etc. even if they appear on separate rows from the name.
+    expected_output: JSON object with requested metrics, each containing data for ALL years found in the filing, including executives whose titles span multiple table rows
+
+  - id: analysis_task
+    agent: analyst
+    context: [research_task]
+    description: |
+      Validate the extracted JSON data and ensure it contains ALL available years and executives.
+      Your job is to:
+      1. Verify the numbers match what's in the SEC filing content for ALL years
+      2. Ensure the JSON is valid and well-structured
+      3. Check that years are complete (don't miss any years from the original data)
+      4. IMPORTANT: Verify that executives with multi-row titles were found correctly:
+         - CFO might be listed as 'Senior Vice President, Chief Financial Officer'
+         - Look for anyone with 'Chief Financial Officer' in their title
+         - Look for anyone with 'Chief Executive Officer' in their title
+      5. Output the final JSON with clean numerical values (no commas, dollar signs)
+
+      Your output must be valid JSON only, nothing else.
+      CRITICAL: NEVER use placeholder values like 99999, 0, or any made-up numbers.
+      If data is not found, use null or omit the year entirely.
+      Only include years where actual data exists in the filing.
+      Format with ALL available years and proper executive identification:
+      {
+        "Total CEO compensation": {
+          "2022": {
+            "value": 99420097,
+            "name": "Tim Cook",
+            "title": "Chief Executive Officer",
+            "source": "Summary Compensation Table"
+          },
+          "2021": {
+            "value": 98734394,
+            "name": "Tim Cook",
+            "title": "Chief Executive Officer",
+            "source": "Summary Compensation Table"
+          }
+        },
+        "Total CFO compensation": {
+          "2022": {
+            "value": 27151798,
+            "name": "Luca Maestri",
+            "title": "Senior Vice President, Chief Financial Officer",
+            "source": "Summary Compensation Table"
+          },
+          "2021": {
+            "value": 26978503,
+            "name": "Luca Maestri",
+            "title": "Senior Vice President, Chief Financial Officer",
+            "source": "Summary Compensation Table"
+          }
+        }
+      }
+      If data for 2023 doesn't exist, DO NOT include a 2023 entry. If an entire metric is not found, use null for the whole metric.
+    expected_output: Valid JSON object with clean numerical values for each requested metric across ALL available years, correctly identifying executives with multi-row titles

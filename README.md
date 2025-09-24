@@ -214,6 +214,68 @@ pip install ruff black mypy
 ruff check ra_crew
 black ra_crew  
 mypy ra_crew
+
+## Customizing Prompts (YAML Externalization)
+
+Static agent roles, goals, backstories, and task instructions now live in YAML under `prompts/`:
+
+- `prompts/agents.yaml`: Defines each agent (`id`, `name`, `role`, `goal`, `backstory`).
+- `prompts/tasks.yaml`: Defines each task (`id`, `agent`, `description`, `expected_output`, optional `context`).
+
+### Placeholders
+
+Task descriptions support runtime placeholders interpolated before execution:
+
+| Placeholder | Injected Value |
+|-------------|----------------|
+| `{metrics}` | List of metrics requested |
+| `{ticker}` | Company ticker or CIK |
+| `{years}` | List of target years |
+| `{filing_types}` | List of SEC form types (e.g., 10-K, DEF 14A) |
+| `{hint}` | User-provided hint text (may be empty) |
+| `{sec_filing_content}` | RAG-extracted relevant filing sections |
+
+If you add new placeholders, ensure they are passed in the crew kickoff inputs and wired through the interpolation dictionary in `ra_crew/agents/crew.py`.
+
+### Editing Prompts
+
+1. Open the YAML file you want to change.
+2. Modify only the free text; keep YAML keys intact.
+3. Avoid accidental `{placeholder}` removals unless you remove their logic.
+4. No restart needed—subsequent runs load the modified YAML (cache resets on process start).
+
+### Adding a New Task
+
+1. Add a new task block to `prompts/tasks.yaml` with a unique `id`.
+2. Reference an existing agent by its `agent` field.
+3. (Optional) Add `context: [other_task_id]` if it depends on prior task output.
+4. Update orchestration in `crew.py` only if task ordering changes; otherwise order follows YAML list order.
+
+### Common Pitfalls
+
+- Placeholder typo => interpolation error (see logs for missing key).
+- Invalid YAML (indentation) => loader exception on startup.
+- Large `{sec_filing_content}` may exceed model context; tune RAG chunking in `rag.py` if needed.
+
+## Batch Input Example
+
+An example company list file is provided for multi-company processing:
+
+`examples/companies.example` (format: `TICKER:YEAR` per line):
+```
+AAPL:2023
+MSFT:2022
+TSLA:2023
+```
+
+Metrics example (`examples/metrics.example`):
+```
+Total CEO compensation
+Total CFO compensation
+Total CEO salary
+```
+
+Use with CLI flags `--companies-file` and `--metrics-file`.
 ```
 
 ## Important Notes

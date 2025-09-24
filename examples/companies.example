@@ -1,1 +1,9 @@
+## Example companies file (TICKER:YEAR per line)
+## Lines starting with # are ignored.
+## Duplicate tickers with multiple years are allowed.
+## You can also use raw CIK values (e.g., 0000320193:2023 for Apple).
+
 AAPL:2023
+MSFT:2022
+TSLA:2023
+GOOGL:2022
