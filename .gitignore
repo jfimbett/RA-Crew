@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+env/
+.mypy_cache/
+.ruff_cache/
+
+# Envs & secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & data
+logs/
+data/
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/

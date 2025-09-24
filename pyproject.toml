@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ra-agent"
+version = "0.1.0"
+description = "SEC filings retrieval and extraction crew"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+ra-agent = "ra_agent.cli:app"
