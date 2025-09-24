@@ -84,7 +84,7 @@ def main(
     if interactive:
         print(Panel.fit("[bold cyan]RA-Agent Interactive Wizard[/bold cyan]", border_style="cyan"))
         id_input = Prompt.ask("Enter company identifier ([green]ticker[/green] or [yellow]CIK[/yellow])", default="AAPL")
-        year = int(Prompt.ask("Enter year", default="2024"))
+        year = int(Prompt.ask("Enter year", default="2023"))
         filings = Prompt.ask("Filing types (comma-separated)", default="DEF 14A")
         metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
         # Ask for hint text (recommended)
@@ -113,8 +113,9 @@ def main(
     # Print a clear delegation graph and pipeline overview before processing
     console = Console()
     try:
-        from .agents.crew import build_crew
-        crew = build_crew()
+        from .agents.crew import SECDataCrew
+        crew_wrapper = SECDataCrew()
+        crew = crew_wrapper.crew
         # Delegation graph (who delegates to whom)
         console.print(Panel.fit("[bold magenta]Crew Agents & Delegation[/bold magenta]", border_style="magenta"))
         tree = Tree("Delegation")
@@ -165,8 +166,8 @@ def main(
             typer.echo("[INFO] Using CrewAI agents workflow...")
         
         try:
-            from .agents.crew import build_crew
-            crew = build_crew()
+            from .agents.crew import SECDataCrew
+            crew = SECDataCrew()
             
             results = []
             for identifier, year in pairs:
@@ -205,11 +206,18 @@ def main(
                         "cik": cik,
                         "year": year,
                         "crew_output": str(crew_result),
-                        "hint": hint
+                        "hint": hint,
+                        "processing_method": "CrewAI with RAG",
+                        "filing_types": filing_types,
+                        "metrics": metric_list
                     }
                     results.append(result_data)
                     
+                    if verbose:
+                        typer.echo(f"[INFO] CrewAI processing completed for {identifier}")
+                    
                 except Exception as e:
+                    typer.echo(f"[ERROR] CrewAI processing failed for {identifier}: {e}")
                     results.append({"identifier": identifier, "year": year, "error": str(e)})
             
         except ImportError:

@@ -6,40 +6,104 @@ from typing import List, Optional, Dict, Any
 from crewai import Agent, Task, Crew, Process
 
 from ..config import settings
-from ..utils.logging_utils import setup_logging
+from ..utils.logging_utils import setup_logging, logger
 from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text, is_xml_content
 from ..tools.cleaning import clean_text, extract_tables
 from ..tools.extraction_llm import llm_extract_metric
 from ..tools.calculator import compute_metric
 from ..tools.validation import validate_values
 from ..tools.exporter import export_rows
-
-
-def _llm_config() -> Dict[str, Any]:
-    # Keep flexible provider choice; defer concrete instantiation to CrewAI defaults via env
-    # Users can configure provider via environment variables
-    return {
-        "temperature": 0.1,
-        "model": os.getenv("MODEL_NAME", "gpt-4o-mini"),  # default if using OpenAI
-    }
+from ..tools.rag import SimpleRAG
+from ..utils.identifiers import is_cik, normalize_cik, ticker_to_cik
 
 
 def _agent(name: str, role: str, goal: str, backstory: str, tools: Optional[List[Any]] = None, allow_delegation: bool = False) -> Agent:
     # Get verbosity from environment or default to True for agents
     verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
+    
+    # Use string model name instead of dict - CrewAI will handle the LLM creation
+    model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
+    
     return Agent(
         name=name,
         role=role,
         goal=goal,
         backstory=backstory,
-        llm=_llm_config(),
+        llm=model_name,  # Pass string model name, not dict
         verbose=verbose_mode,
         tools=tools or [],
         allow_delegation=allow_delegation,
     )
 
 
+def retrieve_sec_data(ticker: str, years: List[int], filing_types: List[str]) -> Dict[str, Any]:
+    """Retrieve actual SEC filing data for the ticker and years specified."""
+    try:
+        # Get CIK for ticker
+        if is_cik(ticker):
+            cik = normalize_cik(ticker)
+        else:
+            cik = ticker_to_cik(ticker) or get_cik_for_ticker(ticker) or ""
+            
+        if not cik:
+            return {"error": f"CIK not found for ticker {ticker}"}
+            
+        logger.info(f"Retrieving SEC data for {ticker} (CIK {cik}) years {years} filing types {filing_types}")
+        
+        # Get filings for all years
+        filings = list_company_filings(cik, years, filing_types)
+        
+        if not filings:
+            return {"error": f"No {filing_types} filings found for {ticker} in {years}"}
+            
+        logger.info(f"Found {len(filings)} filings")
+        
+        # Download and process each filing
+        documents = []
+        for filing in filings[:3]:  # Limit to 3 most recent filings
+            try:
+                html = download_filing(cik, filing["accessionNumber"], filing["primaryDocument"])
+                text = html_to_text(html)
+                cleaned_text = clean_text(text)
+                
+                # Save the filing data
+                cik_nozero = str(int(cik))
+                acc_no = filing["accessionNumber"].replace("-", "")
+                base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
+                os.makedirs(base_dir, exist_ok=True)
+                
+                text_path = os.path.join(base_dir, "cleaned.txt")
+                with open(text_path, "w", encoding="utf-8") as f:
+                    f.write(cleaned_text)
+                
+                documents.append({
+                    "filing_meta": filing,
+                    "text": cleaned_text,
+                    "text_path": text_path,
+                    "form": filing["form"],
+                    "filing_date": filing["filingDate"]
+                })
+                logger.info(f"Retrieved and processed {filing['form']} filing from {filing['filingDate']}")
+                
+            except Exception as e:
+                logger.error(f"Error processing filing {filing['accessionNumber']}: {e}")
+                continue
+        
+        return {
+            "ticker": ticker,
+            "cik": cik,
+            "documents": documents,
+            "years": years,
+            "filing_types": filing_types
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving SEC data: {e}")
+        return {"error": f"Failed to retrieve SEC data: {str(e)}"}
+
+
 def build_crew() -> Crew:
+    """Build a CrewAI crew for financial data extraction that actually works."""
     setup_logging()
     
     # Enable LangChain debugging if crew verbosity is on
@@ -47,220 +111,285 @@ def build_crew() -> Crew:
         os.environ["LANGCHAIN_VERBOSE"] = "true"
         os.environ["LANGCHAIN_TRACING_V2"] = "false"  # Avoid external tracing
 
-    data_retriever = _agent(
-        name="DataRetriever",
-        role="Retrieve SEC EDGAR filings",
-        goal=(
-            "Connect to SEC EDGAR, respect rate limits (10 req/s), use headers with identity, "
-            "fetch filings for tickers/years and convert HTML to text."
-        ),
+    # Create agents with proper CrewAI patterns and tool access
+    researcher = _agent(
+        name="FinancialResearcher",
+        role="SEC Filing Data Extractor",
+        goal="Extract specific financial metrics as JSON from SEC filings for all available years",
         backstory=(
-            "Expert at SEC EDGAR endpoints, pagination, and robust retrieval, returning raw and text versions."
+            "You are an expert at reading SEC filings and extracting financial data from complex table structures. "
+            "You understand that executive titles often span multiple rows in tables (e.g., 'Luca Maestri' on row 1, "
+            "'Senior Vice President,' on row 2, 'Chief Financial Officer' on row 3). "
+            "You always search for functional titles like 'Chief Financial Officer', 'Chief Executive Officer' "
+            "regardless of their position in the table structure. You extract EXACT numbers for ALL years present "
+            "and work with any type of SEC filing: 10-K, 10-Q, DEF 14A, 8-K, etc. "
+            "CRITICAL: You NEVER use placeholder values like 99999, 0, or estimates. If data doesn't exist, you use null."
         ),
+        # For now, no tools - agents will work with provided data
+        tools=[]
     )
 
-    data_cleaner = _agent(
-        name="DataCleaner",
-        role="Clean and normalize text",
-        goal="Strip HTML residue, normalize whitespace, remove boilerplate, segment sections, save JSON/CSV.",
-        backstory="Experienced data wrangler for financial filings.",
+    analyst = _agent(
+        name="DataAnalyst", 
+        role="JSON Validator and Formatter",
+        goal="Validate extracted multi-year data and output clean JSON with numerical values",
+        backstory=(
+            "You are a JSON formatting specialist for multi-year financial data. You ensure that "
+            "extracted data contains ALL available years from the filing, properly formatted as valid JSON. "
+            "You remove formatting (commas, dollar signs) from numbers and validate data consistency "
+            "across years. You work with any SEC filing type and any financial metric. "
+            "CRITICAL: You NEVER allow placeholder values like 99999, 0, or estimates in the final output. "
+            "Missing data must be null or omitted entirely. Your output is always valid JSON with complete year coverage."
+        )
     )
 
-    data_extractor = _agent(
-        name="DataExtractor",
-        role="Extract variables and facts",
-        goal=(
-            "Given cleaned text and a target variable/metric, locate values using hybrid search (BM25/RAG) and regex."
-        ),
-        backstory="Finds needles in haystacks across 10-K/Q and proxies.",
-    )
-
-    data_calculator = _agent(
-        name="DataCalculator",
-        role="Compute metrics",
-        goal="Use Python to compute requested metrics strictly via code, not mental math.",
-        backstory="Careful with units and numeric precision.",
-    )
-
-    data_validator = _agent(
-        name="DataValidator",
-        role="Validate extracted data",
-        goal="Check reasonableness, units, missingness, duplicates across companies/periods.",
-        backstory="Auditor mindset.",
-    )
-
-    data_exporter = _agent(
-        name="DataExporter",
-        role="Export final data",
-        goal="Write outputs as JSON or CSV as requested.",
-        backstory="Organized and consistent file outputs.",
-    )
-
-    graduate_assistant = _agent(
-        name="GraduateAssistant",
-        role="Orchestrate crew",
-        goal=(
-            "Delegate tasks to retrieve, clean, extract, compute, validate, and export data across companies and years."
-        ),
-        backstory="Manages multi-company, multi-period workflows with error handling and retries.",
-        allow_delegation=True,
-    )
-
-    # Define high-level placeholder tasks; the CLI will feed inputs
-    def _run_retrieve(inputs: Dict[str, Any]) -> Dict[str, Any]:
-        ticker: str = inputs["ticker"]
-        years: list[int] = inputs["years"]
-        filing_types: list[str] = inputs["filing_types"]
-        out: list[dict] = []
-        cik = get_cik_for_ticker(ticker)
-        if not cik:
-            return {"filings": out, "error": f"No CIK for {ticker}"}
-        filings = list_company_filings(cik, years, filing_types)
-        for f in filings:
-            html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
-            text = html_to_text(html)
-            cleaned_text = clean_text(text)
-            tables = extract_tables(html)
-            # Persist cleaned text and tables
-            cik_nozero = str(int(cik))
-            acc_no = f["accessionNumber"].replace("-", "")
-            base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
-            os.makedirs(base_dir, exist_ok=True)
-            text_path = os.path.join(base_dir, "cleaned.txt")
-            with open(text_path, "w", encoding="utf-8") as fh:
-                fh.write(cleaned_text)
-            xml_path = None
-            if is_xml_content(html):
-                xml_path = os.path.join(base_dir, "source.xml")
-                with open(xml_path, "w", encoding="utf-8") as xf:
-                    xf.write(html)
-            import orjson
-            tables_path = os.path.join(base_dir, "tables.json")
-            with open(tables_path, "wb") as fh:
-                fh.write(orjson.dumps(tables, option=orjson.OPT_INDENT_2))
-            out.append({
-                "meta": {**f, "cik": cik, "paths": {"text": text_path, "tables": tables_path, "xml": xml_path}},
-                "html": html,
-                "text": cleaned_text,
-            })
-        return {"filings": out}
-
-    t_retrieve = Task(
+    # Create tasks with dynamic descriptions that use input variables
+    research_task = Task(
         description=(
-            "For each company and year, find target filings and return text. Ensure SEC headers include user identity: "
-            f"{settings.edgar_identity}. Respect 10 req/s rate limit."
+            "IMPORTANT: SEC filings often contain compensation or financial data from MULTIPLE YEARS. "
+            "For example, proxy statements contain 3+ years of data, 10-K filings contain historical data. "
+            "\nYou will be provided with actual SEC filing content. "
+            "Extract the requested metrics: {metrics} from the SEC filing text provided below. "
+            "Filing details: Ticker {ticker}, Filing Year {years}, Filing types {filing_types} "
+            "Hint: {hint} "
+            "\n\nSEC FILING CONTENT:\n{sec_filing_content}\n\n"
+            "CRITICAL INSTRUCTIONS:\n"
+            "1. Look for compensation tables, financial statements, or relevant sections\n"
+            "2. IMPORTANT: Executive titles may span multiple rows in tables. For example:\n"
+            "   Row 1: 'Luca Maestri' 'Senior Vice President,'\n"
+            "   Row 2: [blank] 'Chief Financial Officer'\n"
+            "   This person is the CFO - look for 'Chief Financial Officer' anywhere near the name\n"
+            "3. Search for executives by their functional titles: CEO, CFO, COO, CTO, etc.\n"
+            "4. Extract data for ALL YEARS available in the document (typically 3+ years)\n"
+            "5. Extract EXACT numbers from tables - DO NOT estimate or round\n"
+            "6. For each requested metric, provide data for ALL available years in JSON format:\n"
+            "{{\n"
+            "  \"Total CEO compensation\": {{\n"
+            "    \"2022\": {{\n"
+            "      \"value\": [exact number],\n"
+            "      \"name\": \"[executive name]\",\n"
+            "      \"title\": \"[full title from table]\",\n"
+            "      \"source\": \"[table/section name]\"\n"
+            "    }},\n"
+            "    \"2021\": {{\n"
+            "      \"value\": [exact number],\n"
+            "      \"name\": \"[executive name]\",\n"
+            "      \"title\": \"[full title from table]\",\n"
+            "      \"source\": \"[table/section name]\"\n"
+            "    }}\n"
+            "  }},\n"
+            "  \"Total CFO compensation\": {{\n"
+            "    \"2022\": {{\n"
+            "      \"value\": [exact number],\n"
+            "      \"name\": \"[executive name]\",\n"
+            "      \"title\": \"[full title from table]\",\n"
+            "      \"source\": \"[table/section name]\"\n"
+            "    }}\n"
+            "  }}\n"
+            "}}\n"
+            "CRITICAL: If data is NOT found for a specific year or metric, use null (not 99999, not 0, not any made-up number). "
+            "Only include years where you actually found the data in the filing. "
+            "REMEMBER: Look for 'Chief Financial Officer', 'Chief Executive Officer', etc. even if they appear on separate rows from the name."
         ),
-        agent=data_retriever,
-        expected_output="Raw HTML and plain text per filing.",
-        context={"runner": _run_retrieve},
+        agent=researcher,
+        expected_output=(
+            "JSON object with requested metrics, each containing data for ALL years found in the filing, including executives whose titles span multiple table rows"
+        )
     )
 
-    def _run_clean(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-        cleaned: list[dict] = []
-        for doc in prev.get("filings", []):
-            cleaned.append({"meta": doc["meta"], "text": clean_text(doc["text"])})
-        return {"cleaned": cleaned}
-
-    t_clean = Task(
-        description="Clean and normalize text, remove HTML noise, segment sections, store intermediate artifacts.",
-        agent=data_cleaner,
-        expected_output="Cleaned text with section markers in JSON.",
-        context={"runner": _run_clean},
-    )
-
-    def _run_extract(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-        metrics: list[str] = inputs.get("metrics", [])
-        hint: Optional[str] = inputs.get("hint")  # optional free-text hint
-        rows: list[dict] = []
-        for doc in prev.get("cleaned", []):
-            text = doc["text"]
-            meta = doc["meta"]
-            for m in metrics:
-                xml_content = None
-                xml_p = meta.get("paths", {}).get("xml")
-                if xml_p and os.path.exists(xml_p):
-                    try:
-                        with open(xml_p, "r", encoding="utf-8") as xf:
-                            xml_content = xf.read()
-                    except Exception:
-                        xml_content = None
-                res = llm_extract_metric(text, m, hint=hint, form=meta.get("form"), xml=xml_content)
-                rows.append(
-                    {
-                        "ticker": inputs["ticker"],
-                        "year": int(meta["filingDate"][:4]),
-                        "metric": res["metric"],
-                        "value": res["value"],
-                        "context": res.get("context", ""),
-                        "form": meta["form"],
-                    }
-                )
-        return {"rows": rows}
-
-    t_extract = Task(
-        description="Extract requested variables or needed components for a metric using hybrid search and regex.",
-        agent=data_extractor,
-        expected_output="Key-value pairs with provenance (section, page, snippet).",
-        context={"runner": _run_extract},
-    )
-
-    def _run_calc(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-        # Placeholder: no bespoke formulas provided yet; pass-through
-        return prev
-
-    t_calc = Task(
-        description="Compute metrics via Python code execution based on extracted variables, handling units.",
-        agent=data_calculator,
-        expected_output="Computed metric values with formula and inputs.",
-        context={"runner": _run_calc},
-    )
-
-    def _run_validate(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-        report = validate_values(prev.get("rows", []))
-        return {**prev, "validation": report}
-
-    t_validate = Task(
-        description="Validate values, check units, detect outliers and duplicates across firm-periods.",
-        agent=data_validator,
-        expected_output="Validation report with flags and clean dataset.",
-        context={"runner": _run_validate},
-    )
-
-    def _run_export(prev: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
-        fmt = inputs.get("output_format", "json")
-        path = export_rows(prev.get("rows", []), fmt, name=f"results_{inputs['ticker']}_{inputs['years'][0]}")
-        return {**prev, "output_path": path}
-
-    t_export = Task(
-        description="Export outputs to JSON/CSV as requested with consistent schema.",
-        agent=data_exporter,
-        expected_output="Saved files paths for final dataset and logs.",
-        context={"runner": _run_export},
+    analysis_task = Task(
+        description=(
+            "Validate the extracted JSON data and ensure it contains ALL available years and executives. "
+            "Your job is to:\n"
+            "1. Verify the numbers match what's in the SEC filing content for ALL years\n"
+            "2. Ensure the JSON is valid and well-structured\n"
+            "3. Check that years are complete (don't miss any years from the original data)\n"
+            "4. IMPORTANT: Verify that executives with multi-row titles were found correctly:\n"
+            "   - CFO might be listed as 'Senior Vice President, Chief Financial Officer'\n"
+            "   - Look for anyone with 'Chief Financial Officer' in their title\n"
+            "   - Look for anyone with 'Chief Executive Officer' in their title\n"
+            "5. Output the final JSON with clean numerical values (no commas, dollar signs)\n"
+            "\nYour output must be valid JSON only, nothing else.\n"
+            "CRITICAL: NEVER use placeholder values like 99999, 0, or any made-up numbers. "
+            "If data is not found, use null or omit the year entirely. "
+            "Only include years where actual data exists in the filing.\n"
+            "Format with ALL available years and proper executive identification:\n"
+            "{{\n"
+            "  \"Total CEO compensation\": {{\n"
+            "    \"2022\": {{\n"
+            "      \"value\": 99420097,\n"
+            "      \"name\": \"Tim Cook\",\n"
+            "      \"title\": \"Chief Executive Officer\",\n"
+            "      \"source\": \"Summary Compensation Table\"\n"
+            "    }},\n"
+            "    \"2021\": {{\n"
+            "      \"value\": 98734394,\n"
+            "      \"name\": \"Tim Cook\",\n"
+            "      \"title\": \"Chief Executive Officer\",\n"
+            "      \"source\": \"Summary Compensation Table\"\n"
+            "    }}\n"
+            "  }},\n"
+            "  \"Total CFO compensation\": {{\n"
+            "    \"2022\": {{\n"
+            "      \"value\": 27151798,\n"
+            "      \"name\": \"Luca Maestri\",\n"
+            "      \"title\": \"Senior Vice President, Chief Financial Officer\",\n"
+            "      \"source\": \"Summary Compensation Table\"\n"
+            "    }},\n"
+            "    \"2021\": {{\n"
+            "      \"value\": 26978503,\n"
+            "      \"name\": \"Luca Maestri\",\n"
+            "      \"title\": \"Senior Vice President, Chief Financial Officer\",\n"
+            "      \"source\": \"Summary Compensation Table\"\n"
+            "    }}\n"
+            "  }}\n"
+            "}}\n"
+            "If data for 2023 doesn't exist, DO NOT include a 2023 entry. If an entire metric is not found, use null for the whole metric."
+        ),
+        agent=analyst,
+        expected_output=(
+            "Valid JSON object with clean numerical values for each requested metric across ALL available years, correctly identifying executives with multi-row titles"
+        ),
+        context=[research_task]
     )
 
     # Get verbosity setting from environment
     verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
     
-    # Simple step callback to show agent activity in real-time (if supported)
-    def step_callback(*args, **kwargs):
-        if args:
-            print(f"[AGENT STEP] {args[0]}")
-        print("-" * 30)
+    # Create log file path
+    log_file = None
+    if verbose_mode:
+        os.makedirs(settings.outputs_dir, exist_ok=True)
+        log_file = os.path.join(settings.outputs_dir, "crew_execution.log")
+        logger.info(f"CrewAI execution will be logged to {log_file}")
     
+    # Create crew with proper configuration
     crew = Crew(
-        agents=[
-            graduate_assistant,
-            data_retriever,
-            data_cleaner,
-            data_extractor,
-            data_calculator,
-            data_validator,
-            data_exporter,
-        ],
-        tasks=[t_retrieve, t_clean, t_extract, t_calc, t_validate, t_export],
+        agents=[researcher, analyst],
+        tasks=[research_task, analysis_task],
         process=Process.sequential,
         verbose=verbose_mode,
-        output_log_file="crew_execution.txt" if verbose_mode else None,
-        step_callback=step_callback if verbose_mode else None,
+        output_log_file=log_file,
     )
     return crew
+
+
+class SECDataCrew:
+    """Custom crew wrapper that retrieves SEC data before processing."""
+    
+    def __init__(self):
+        self.crew = build_crew()
+    
+    def kickoff(self, inputs: Dict[str, Any]) -> str:
+        """Custom kickoff that retrieves SEC data first, then processes it with RAG."""
+        ticker = inputs.get("ticker", "")
+        years = inputs.get("years", [])
+        filing_types = inputs.get("filing_types", [])
+        metrics = inputs.get("metrics", [])
+        hint = inputs.get("hint", "")
+        output_format = inputs.get("output_format", "json")
+        
+        logger.info(f"Starting SEC data retrieval for {ticker}")
+        
+        # Retrieve actual SEC data
+        sec_data = retrieve_sec_data(ticker, years, filing_types)
+        
+        if "error" in sec_data:
+            return f"ERROR: {sec_data['error']}"
+        
+        # Initialize RAG system
+        rag = SimpleRAG(chunk_size=2000, overlap=200)
+        
+        # Create query from requested metrics
+        search_query = " ".join(metrics) if metrics else "compensation"
+        if hint:
+            search_query += f" {hint}"
+        
+        logger.info(f"Using RAG to search for: {search_query}")
+        
+        # Extract relevant sections using RAG for each document
+        relevant_sections = []
+        for doc in sec_data["documents"]:
+            logger.info(f"Processing {doc['form']} filing from {doc['filing_date']} with RAG")
+            
+            # Use RAG to get most relevant sections
+            relevant_content = rag.extract_context_for_query(
+                text=doc['text'],
+                source_info={
+                    "form": doc['form'],
+                    "filing_date": doc['filing_date'],
+                    "ticker": ticker
+                },
+                query=search_query
+            )
+            
+            relevant_sections.append(
+                f"\n=== {doc['form']} Filing from {doc['filing_date']} ===\n"
+                f"{relevant_content}"
+            )
+        
+        # Combine all relevant sections
+        sec_filing_content = "\n".join(relevant_sections)
+        
+        logger.info(f"RAG extracted {len(sec_filing_content)} characters of relevant content from {len(sec_data['documents'])} documents")
+        
+        # Update inputs with RAG-extracted relevant content
+        crew_inputs = {
+            **inputs,
+            "sec_filing_content": sec_filing_content
+        }
+        
+        logger.info(f"Processing relevant sections with CrewAI")
+        
+        # Execute the crew with RAG-extracted relevant content
+        result = self.crew.kickoff(inputs=crew_inputs)
+        
+        logger.info("Crew processing completed")
+        
+        # Export results to JSON/CSV like the direct processing does
+        try:
+            import orjson
+            import json
+            os.makedirs(settings.outputs_dir, exist_ok=True)
+            
+            # Try to parse the crew result as JSON
+            try:
+                crew_result_json = json.loads(str(result))
+                logger.info("Successfully parsed crew result as JSON")
+            except json.JSONDecodeError:
+                logger.warning("Crew result is not valid JSON, storing as text")
+                crew_result_json = None
+            
+            # Create structured result data
+            result_data = {
+                "identifier": ticker,
+                "ticker": ticker,
+                "cik": sec_data.get("cik", ""),
+                "years": years,
+                "metrics": metrics,
+                "filing_types": filing_types,
+                "hint": hint,
+                "crew_result": crew_result_json if crew_result_json else str(result),
+                "crew_result_raw": str(result),  # Keep raw for debugging
+                "processing_method": "CrewAI with RAG",
+                "documents_processed": len(sec_data.get("documents", [])),
+                "rag_query": search_query
+            }
+            
+            # Save individual result
+            output_file = os.path.join(settings.outputs_dir, f"crew_results_{ticker}_{'_'.join(map(str, years))}.{output_format}")
+            
+            if output_format == "json":
+                with open(output_file, "wb") as f:
+                    f.write(orjson.dumps([result_data], option=orjson.OPT_INDENT_2))
+            elif output_format == "csv":
+                import pandas as pd
+                df = pd.DataFrame([result_data])
+                df.to_csv(output_file, index=False)
+            
+            logger.info(f"Results saved to {output_file}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save results: {e}")
+        
+        return result

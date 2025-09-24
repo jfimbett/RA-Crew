@@ -1,5 +1,12 @@
-# Example list of metrics to extract
 Total CEO compensation
-R&D expense
-Net income
-Total assets
+Total CEO salary
+Total CEO bonus
+Total CEO stock awards
+Total CEO non-equity incentive plan compensation
+Total CEO all other compensation
+Total CFO compensation
+Total CFO salary
+Total CFO bonus
+Total CFO stock awards
+Total CFO non-equity incentive plan compensation
+Total CFO all other compensation
