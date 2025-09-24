@@ -4,14 +4,18 @@ import os
 from typing import Optional, List
 import typer
 from tqdm import tqdm
+from rich import print
+from rich.prompt import Prompt, Confirm
+from rich.panel import Panel
 
 from .config import settings
 from .utils.logging_utils import setup_logging
 from .tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
 from .tools.cleaning import clean_text
-from .tools.extraction import extract_metric
+from .tools.extraction import extract_metric, extract_metric_with_hints
 from .tools.validation import validate_values
 from .tools.exporter import export_rows
+from .utils.identifiers import is_cik, normalize_cik, ticker_to_cik
 
 
 app = typer.Typer(add_completion=False)
@@ -50,12 +54,27 @@ def main(
     metrics: Optional[str] = typer.Option(None, help="Comma-separated metrics to extract"),
     metrics_file: Optional[str] = typer.Option(None, help="Path to a file with metrics, one per line"),
     output_format: str = typer.Option("json", help="json or csv"),
+    section_hints_file: Optional[str] = typer.Option(None, help="JSON file with section hints"),
+    interactive: bool = typer.Option(False, help="Launch interactive wizard"),
     verbose: bool = typer.Option(False, help="Increase verbosity"),
 ):
     """Run the SEC filings crew over the specified companies and years."""
     setup_logging()
     if verbose:
         os.environ["LOG_LEVEL"] = "DEBUG"
+
+    if interactive:
+        print(Panel.fit("[bold cyan]RA-Agent Interactive Wizard[/bold cyan]", border_style="cyan"))
+        id_input = Prompt.ask("Enter company identifier ([green]ticker[/green] or [yellow]CIK[/yellow])", default="AAPL")
+        year = int(Prompt.ask("Enter year", default="2024"))
+        filings = Prompt.ask("Filing types (comma-separated)", default="DEF 14A")
+        metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
+        use_hints = Confirm.ask("Use default DEF 14A section hints?", default=True)
+        if use_hints and not section_hints_file:
+            # default hints example path
+            section_hints_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "section_hints.def14a.json")
+        companies = f"{id_input}:{year}"
+        metrics = metric
 
     pairs: List[tuple[str, int]] = []
     pairs.extend(_parse_companies(companies))
@@ -75,30 +94,46 @@ def main(
 
     filing_types = [f.strip() for f in filings.split(",") if f.strip()]
 
+    # Load optional section hints
+    hints = None
+    if section_hints_file:
+        import json
+        with open(section_hints_file, "r", encoding="utf-8") as fh:
+            hints = json.load(fh)
+
     results = []
-    for ticker, year in tqdm(pairs, desc="Companies"):
+    for identifier, year in tqdm(pairs, desc="Companies"):
         try:
-            cik = get_cik_for_ticker(ticker)
+            # Detect ticker vs CIK
+            if is_cik(identifier):
+                cik = normalize_cik(identifier)
+                ticker = identifier  # ticker unknown; keep id for output label
+            else:
+                ticker = identifier
+                cik = ticker_to_cik(ticker) or get_cik_for_ticker(ticker) or ""
             if not cik:
-                results.append({"ticker": ticker, "year": year, "error": "CIK not found"})
+                results.append({"id": identifier, "year": year, "error": "CIK not found"})
                 continue
             filings = list_company_filings(cik, [year], filing_types)
             docs = []
             for f in filings:
                 html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
                 text = html_to_text(html)
-                docs.append({"meta": f, "text": text})
+                docs.append({"meta": f, "text": text, "html": html})
             cleaned = [
-                {"meta": d["meta"], "text": clean_text(d["text"])}
+                {"meta": d["meta"], "text": clean_text(d["text"]), "html": d["html"]}
                 for d in docs
             ]
             rows = []
             for doc in cleaned:
                 for m in metric_list:
-                    res = extract_metric(doc["text"], m)
+                    # If hints provided, try hinted extraction first (placeholder)
+                    res = extract_metric_with_hints(doc["text"], m, hints)
                     rows.append(
                         {
+                            "identifier": identifier,
                             "ticker": ticker,
+                            "cik": cik,
                             "year": int(doc["meta"]["filingDate"][:4]),
                             "metric": res["metric"],
                             "value": res["value"],
@@ -107,10 +142,10 @@ def main(
                         }
                     )
             report = validate_values(rows)
-            out_path = export_rows(rows, output_format, name=f"results_{ticker}_{year}")
-            results.append({"ticker": ticker, "year": year, "output": out_path, "validation": report})
+            out_path = export_rows(rows, output_format, name=f"results_{identifier}_{year}")
+            results.append({"identifier": identifier, "ticker": ticker, "cik": cik, "year": year, "output": out_path, "validation": report})
         except Exception as e:
-            results.append({"ticker": ticker, "year": year, "error": str(e)})
+            results.append({"identifier": identifier, "year": year, "error": str(e)})
 
     # Save a session summary
     os.makedirs(settings.outputs_dir, exist_ok=True)

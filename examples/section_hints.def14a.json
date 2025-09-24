@@ -1,0 +1,13 @@
+{
+  "hints": [
+    {
+      "forms": ["DEF 14A"],
+      "sections": [
+        "Summary Compensation Table",
+        "Executive Compensation",
+        "Compensation Discussion and Analysis"
+      ],
+      "metrics": ["Total CEO compensation", "CEO total compensation"]
+    }
+  ]
+}
