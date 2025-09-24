@@ -54,7 +54,7 @@ def main(
     metrics: Optional[str] = typer.Option(None, help="Comma-separated metrics to extract"),
     metrics_file: Optional[str] = typer.Option(None, help="Path to a file with metrics, one per line"),
     output_format: str = typer.Option("json", help="json or csv"),
-    section_hints_file: Optional[str] = typer.Option(None, help="JSON file with section hints"),
+    section_hints_file: Optional[str] = typer.Option(None, help="JSON file with section hints (no defaults; you must provide)"),
     interactive: bool = typer.Option(False, help="Launch interactive wizard"),
     verbose: bool = typer.Option(False, help="Increase verbosity"),
 ):
@@ -69,10 +69,10 @@ def main(
         year = int(Prompt.ask("Enter year", default="2024"))
         filings = Prompt.ask("Filing types (comma-separated)", default="DEF 14A")
         metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
-        use_hints = Confirm.ask("Use default DEF 14A section hints?", default=True)
-        if use_hints and not section_hints_file:
-            # default hints example path
-            section_hints_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "section_hints.def14a.json")
+        # Always ask for hints; no defaults
+        want_hints = Confirm.ask("Do you want to provide section hints (JSON file)?", default=False)
+        if want_hints:
+            section_hints_file = Prompt.ask("Path to section hints JSON", default="") or None
         companies = f"{id_input}:{year}"
         metrics = metric
 
@@ -94,7 +94,7 @@ def main(
 
     filing_types = [f.strip() for f in filings.split(",") if f.strip()]
 
-    # Load optional section hints
+    # Load optional section hints (no defaults)
     hints = None
     if section_hints_file:
         import json
