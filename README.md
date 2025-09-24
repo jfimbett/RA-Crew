@@ -234,6 +234,9 @@ Task descriptions support runtime placeholders interpolated before execution:
 | `{filing_types}` | List of SEC form types (e.g., 10-K, DEF 14A) |
 | `{hint}` | User-provided hint text (may be empty) |
 | `{sec_filing_content}` | RAG-extracted relevant filing sections |
+| `{derived_metrics}` | List of derived metrics to compute |
+| `{calculation_expressions}` | Mapping of derived metric -> formula expression |
+| `{output_format}` | Desired export format (json or csv) |
 
 If you add new placeholders, ensure they are passed in the crew kickoff inputs and wired through the interpolation dictionary in `ra_crew/agents/crew.py`.
 
@@ -250,6 +253,7 @@ If you add new placeholders, ensure they are passed in the crew kickoff inputs a
 2. Reference an existing agent by its `agent` field.
 3. (Optional) Add `context: [other_task_id]` if it depends on prior task output.
 4. Update orchestration in `crew.py` only if task ordering changes; otherwise order follows YAML list order.
+5. For derived computations, ensure you also pass `derived_metrics` and `calculation_expressions` via kickoff inputs.
 
 ### Common Pitfalls
 

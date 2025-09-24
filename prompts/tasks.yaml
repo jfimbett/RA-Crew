@@ -10,6 +10,92 @@
 # Runtime will supply these via interpolation.
 
 tasks:
+  - id: retrieve_filings
+    agent: retriever
+    description: |
+      Retrieve SEC EDGAR filings for ticker/CIK {ticker} covering years {years} and forms {filing_types}.
+      REQUIREMENTS:
+      - Resolve ticker to CIK if needed.
+      - Enumerate candidate filings prioritizing: DEF 14A (compensation), 10-K (fundamentals), 10-Q (interim), 8-K (events).
+      - Respect SEC rate limits and include correct User-Agent header.
+      - Avoid re-downloading if cached copy exists.
+      - Output structured manifest with: accession_number, form, filing_date, primary_document, local_path.
+      - Limit to most relevant N filings per form category (default 3) unless {hint} specifies otherwise.
+      Provide JSON manifest only.
+    expected_output: JSON list of filing metadata objects with local cache paths
+
+  - id: clean_filings
+    agent: cleaner
+    context: [retrieve_filings]
+    description: |
+      Clean and normalize previously retrieved filings.
+      ACTIONS:
+      - Strip scripts/styles/nav boilerplate.
+      - Preserve table text with row order.
+      - Normalize whitespace, collapse repeated blank lines.
+      - Tag obvious section headers (e.g., 'SUMMARY COMPENSATION TABLE').
+      - Record mapping of original file -> cleaned text path.
+      OUTPUT: JSON object with array of { accession_number, form, filing_date, cleaned_path }.
+    expected_output: JSON object containing cleaned filing records with paths
+
+  - id: extract_metrics
+    agent: researcher
+    context: [clean_filings]
+    description: |
+      From cleaned filing texts, extract requested metrics {metrics} plus any prerequisite primitives for derived metrics {derived_metrics}.
+      Use the hint if provided: {hint}.
+      Ensure multi-year extraction across all available years inside each relevant table.
+      OUTPUT: JSON with per-metric nested year objects, including name, title, source, value.
+    expected_output: JSON object mapping metrics to year-value detail objects
+
+  - id: compute_metrics
+    agent: calculator
+    context: [extract_metrics]
+    description: |
+      Compute derived metrics based on extracted primitive values using formula specifications:
+      {calculation_expressions}
+      RULES:
+      - Perform calculations via Python evaluation only; no manual arithmetic approximation.
+      - If an input component is missing for a year, result for that derived metric-year is null with a reason field.
+      OUTPUT: JSON object of derived metrics paralleling the structure of extracted metrics.
+    expected_output: JSON object of derived metrics with year-wise computed values and provenance notes
+
+  - id: validate_all
+    agent: validator
+    context: [extract_metrics, compute_metrics]
+    description: |
+      Validate extracted and computed metrics for consistency.
+      CHECKS:
+      - No placeholder or sentinel values (99999, NA, TBD, 0 unless legitimately zero).
+      - Units plausibility and cross-year continuity.
+      - Year coverage alignment across metrics.
+      - Missing data appropriately null.
+      OUTPUT: JSON validation report summarizing issues, warnings, and pass/fail per metric.
+    expected_output: JSON validation report with issues, warnings, summary, and pass status
+
+  - id: export_results
+    agent: exporter
+    context: [validate_all]
+    description: |
+      Package final validated data for export in format {output_format}.
+      Include metadata: ticker {ticker}, years {years}, forms {filing_types}, processing_steps, timestamp.
+      Ensure atomic write and preserve nulls.
+      OUTPUT: JSON object describing written artifact (path, format, record_count).
+    expected_output: JSON object with export path, format, and metadata
+
+  - id: coordination_plan
+    agent: coordinator
+    context: [retrieve_filings, clean_filings, extract_metrics, compute_metrics, validate_all, export_results]
+    description: |
+      Summarize the full multi-stage pipeline execution for {ticker} over years {years}.
+      Provide:
+      - Task dependency graph
+      - Timing summary if available
+      - Any retries or errors encountered
+      - Recommendations for optimization (e.g., caching, parallelism)
+      OUTPUT: JSON run report.
+    expected_output: JSON run report with pipeline summary, timings, errors, optimization suggestions
+
   - id: research_task
     agent: researcher
     description: |

@@ -107,11 +107,14 @@ def build_crew() -> Crew:
     # Placeholder interpolation values will be provided later (empty defaults here)
     interpolation_defaults = {
         "metrics": "[]",
+        "derived_metrics": "[]",
+        "calculation_expressions": "{}",
         "ticker": "",
         "years": "[]",
         "filing_types": "[]",
         "hint": "",
         "sec_filing_content": "",
+        "output_format": "json",
     }
     task_objs = build_task_objects(agent_objs, verbose=verbose_mode, interpolation_kwargs=interpolation_defaults, prompts=prompts)
 
@@ -129,6 +132,9 @@ def build_crew() -> Crew:
         verbose=verbose_mode,
         output_log_file=log_file,
     )
+    # Attach agent map for later task re-interpolation at kickoff
+    crew._agent_map = agent_objs  # type: ignore[attr-defined]
+    crew._prompts = prompts       # cache prompts for reuse
     return crew
 
 
@@ -146,6 +152,8 @@ class SECDataCrew:
         metrics = inputs.get("metrics", [])
         hint = inputs.get("hint", "")
         output_format = inputs.get("output_format", "json")
+        derived_metrics = inputs.get("derived_metrics", [])
+        calculation_expressions = inputs.get("calculation_expressions", {})
         
         logger.info(f"Starting SEC data retrieval for {ticker}")
         
@@ -192,25 +200,26 @@ class SECDataCrew:
         logger.info(f"RAG extracted {len(sec_filing_content)} characters of relevant content from {len(sec_data['documents'])} documents")
         
         # Rebuild tasks with actual interpolation values now that we have content
+        # Rebuild only the tasks using existing agent objects with actual interpolated values
         try:
-            prompts = load_prompts()
+            prompts = getattr(self.crew, "_prompts", load_prompts())
+            agent_map = getattr(self.crew, "_agent_map")  # type: ignore[attr-defined]
             verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
-            model_name = os.getenv("MODEL_NAME", "gpt-4o-mini")
-            # Rebuild agents (reuse existing model/verbosity) and tasks with real placeholders
-            agent_objs = build_agent_objects(model_name=model_name, verbose=verbose_mode, prompts=prompts)
             interpolation_values = {
                 "metrics": metrics,
+                "derived_metrics": derived_metrics,
+                "calculation_expressions": calculation_expressions,
                 "ticker": ticker,
                 "years": years,
                 "filing_types": filing_types,
                 "hint": hint,
                 "sec_filing_content": sec_filing_content,
+                "output_format": output_format,
             }
-            task_objs = build_task_objects(agent_objs, verbose=verbose_mode, interpolation_kwargs=interpolation_values, prompts=prompts)
-            # Replace crew tasks with re-interpolated ones preserving order
+            task_objs = build_task_objects(agent_map, verbose=verbose_mode, interpolation_kwargs=interpolation_values, prompts=prompts)
             self.crew.tasks = list(task_objs.values())
         except Exception as e:
-            logger.error(f"Failed to rebuild tasks with interpolation: {e}")
+            logger.error(f"Failed to rebuild tasks with interpolation using existing agents: {e}")
         
         logger.info("Processing relevant sections with CrewAI (interpolated tasks)")
         result = self.crew.kickoff(inputs=inputs)

@@ -7,7 +7,11 @@ Features:
 - Simple dependency expansion for task contexts (list of task ids)
 
 Placeholders use Python str.format syntax. At runtime, you can pass values like:
-    interpolate(template, metrics="['Total CEO compensation']", years="[2021,2022]")
+        interpolate(template, metrics="['Total CEO compensation']", years="[2021,2022]")
+
+Supported placeholders (extendable):
+    metrics, ticker, years, filing_types, hint, sec_filing_content,
+    derived_metrics, calculation_expressions, output_format
 
 If a placeholder is missing from kwargs, interpolation raises a KeyError with guidance.
 """
