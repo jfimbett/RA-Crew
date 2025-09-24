@@ -7,7 +7,7 @@ from crewai import Agent, Task, Crew, Process
 from ..config import settings
 from ..utils.logging_utils import setup_logging
 from ..tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
-from ..tools.cleaning import clean_text
+from ..tools.cleaning import clean_text, extract_tables
 from ..tools.extraction_llm import llm_extract_metric
 from ..tools.calculator import compute_metric
 from ..tools.validation import validate_values
@@ -114,15 +114,25 @@ def build_crew() -> Crew:
         for f in filings:
             html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
             text = html_to_text(html)
-            # Persist to data folder
+            cleaned_text = clean_text(text)
+            tables = extract_tables(html)
+            # Persist cleaned text and tables
             cik_nozero = str(int(cik))
             acc_no = f["accessionNumber"].replace("-", "")
             base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
             os.makedirs(base_dir, exist_ok=True)
-            html_path = os.path.join(base_dir, f["primaryDocument"])
-            with open(html_path, "w", encoding="utf-8") as fh:
-                fh.write(html)
-            out.append({"meta": {**f, "cik": cik, "paths": {"html": html_path}}, "html": html, "text": text})
+            text_path = os.path.join(base_dir, "cleaned.txt")
+            with open(text_path, "w", encoding="utf-8") as fh:
+                fh.write(cleaned_text)
+            import orjson
+            tables_path = os.path.join(base_dir, "tables.json")
+            with open(tables_path, "wb") as fh:
+                fh.write(orjson.dumps(tables, option=orjson.OPT_INDENT_2))
+            out.append({
+                "meta": {**f, "cik": cik, "paths": {"text": text_path, "tables": tables_path}},
+                "html": html,
+                "text": cleaned_text,
+            })
         return {"filings": out}
 
     t_retrieve = Task(

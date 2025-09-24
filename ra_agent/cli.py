@@ -14,7 +14,7 @@ from rich.panel import Panel
 from .config import settings
 from .utils.logging_utils import setup_logging
 from .tools.sec_edgar import get_cik_for_ticker, list_company_filings, download_filing, html_to_text
-from .tools.cleaning import clean_text
+from .tools.cleaning import clean_text, extract_tables
 from .tools.extraction_llm import llm_extract_metric
 from .tools.validation import validate_values
 from .tools.exporter import export_rows
@@ -134,19 +134,28 @@ def main(
             for f in filings:
                 html = download_filing(cik, f["accessionNumber"], f["primaryDocument"])
                 text = html_to_text(html)
-                # Persist raw HTML under data/filings/CIK/ACCESSION/filename
+                # Persist cleaned text and tables under data/filings/CIK/ACCESSION/
                 cik_nozero = str(int(cik))
                 acc_no = f["accessionNumber"].replace("-", "")
                 base_dir = os.path.join(settings.data_dir, "filings", cik_nozero, acc_no)
                 os.makedirs(base_dir, exist_ok=True)
-                html_path = os.path.join(base_dir, f["primaryDocument"])
-                with open(html_path, "w", encoding="utf-8") as fh:
-                    fh.write(html)
-                docs.append({"meta": {**f, "cik": cik, "paths": {"html": html_path}}, "text": text, "html": html})
-            cleaned = [
-                {"meta": d["meta"], "text": clean_text(d["text"]), "html": d["html"]}
-                for d in docs
-            ]
+                # Save cleaned text
+                cleaned_text = clean_text(text)
+                text_path = os.path.join(base_dir, "cleaned.txt")
+                with open(text_path, "w", encoding="utf-8") as fh:
+                    fh.write(cleaned_text)
+                # Save tables (JSON)
+                tables = extract_tables(html)
+                import orjson
+                tables_path = os.path.join(base_dir, "tables.json")
+                with open(tables_path, "wb") as fh:
+                    fh.write(orjson.dumps(tables, option=orjson.OPT_INDENT_2))
+                docs.append({
+                    "meta": {**f, "cik": cik, "paths": {"text": text_path, "tables": tables_path}},
+                    "text": cleaned_text,
+                    "html": html,
+                })
+            cleaned = docs  # already cleaned and saved
             rows = []
             for doc in cleaned:
                 for m in metric_list:
@@ -162,7 +171,8 @@ def main(
                             "value": res["value"],
                             "context": res["context"],
                             "form": doc["meta"]["form"],
-                            "file_path": doc["meta"].get("paths", {}).get("html"),
+                            "file_path_text": doc["meta"].get("paths", {}).get("text"),
+                            "file_path_tables": doc["meta"].get("paths", {}).get("tables"),
                         }
                     )
             report = validate_values(rows)
