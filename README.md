@@ -24,6 +24,11 @@ python -m venv .venv
 ```
 pip install --upgrade pip
 pip install -r requirements.txt
+If you've previously installed `langchain` 0.2.x, uninstall it before installing to avoid resolver conflicts, because this project uses the newer modular packages:
+
+```bash
+pip uninstall -y langchain langchain-text-splitters langchain-community
+pip install -r requirements.txt
 ```
 
 3) Configure environment

@@ -1,6 +1,6 @@
 crewai>=0.86.0,<1.0.0
-langchain>=0.2.16,<0.3.0
-langchain-openai>=0.1.7
+langchain-openai>=0.3.33
+langchain-core>=0.3.76
 openai>=1.0.0,<2.0.0
 tiktoken>=0.5
 
