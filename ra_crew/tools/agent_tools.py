@@ -29,43 +29,49 @@ from ..config import settings
 from ..utils.identifiers import is_cik, normalize_cik, ticker_to_cik
 from ..utils.logging_utils import logger
 
-# Use LangChain built-in tool creation utility for compatibility
-try:  # pragma: no cover
-    from langchain.tools import tool as lc_tool_decorator
-except Exception:  # noqa: BLE001
-    try:
-        from langchain_core.tools import tool as lc_tool_decorator  # type: ignore
-    except Exception as e:  # pragma: no cover
-        raise RuntimeError("LangChain tool decorator not available. Upgrade langchain.") from e
-
 
 def make_tool(func, name: str, description: str):
-    """Return a LangChain Tool object from a raw function.
+    """Create a CrewAI BaseTool from a plain Python function.
 
-    We dynamically wrap the function with the @tool decorator to ensure it
-    produces a BaseTool instance recognized by CrewAI's pydantic validation.
+    This avoids LangChain's StructuredTool so that CrewAI Agent(tools=...) accepts it.
+    It infers a pydantic args_schema from the function signature and wires _run.
     """
-    try:
-        decorated = lc_tool_decorator(name=name)(func)  # newer API supports name kw
-    except TypeError:
-        # Some versions require passing description at decoration time or using direct call
-        try:
-            decorated = lc_tool_decorator(func)
-        except Exception:
-            # Final fallback: try alternative signature (name, description)
-            decorated = lc_tool_decorator(name)(func)  # type: ignore[misc]
-    # Try to set metadata where supported
-    if hasattr(decorated, 'name'):
-        try:
-            decorated.name = name  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    if hasattr(decorated, 'description') and description:
-        try:
-            decorated.description = description  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    return decorated
+    from crewai.tools import BaseTool
+    from pydantic import BaseModel, Field, create_model
+    import inspect as _inspect
+
+    sig = _inspect.signature(func)
+    annotations = getattr(func, "__annotations__", {})
+    fields = {}
+    for p in sig.parameters.values():
+        if p.kind in (_inspect.Parameter.VAR_POSITIONAL, _inspect.Parameter.VAR_KEYWORD):
+            # Skip *args/**kwargs in schema; CrewAI tools expect explicit fields
+            continue
+        ann = annotations.get(p.name, Any)
+        default = p.default if p.default is not _inspect._empty else ...
+        fields[p.name] = (ann, Field(default))
+    # Build args schema model
+    ArgsModel: type[BaseModel] = create_model(f"{name}_args", **fields) if fields else create_model(f"{name}_args")
+
+    # Define attributes for dynamic class creation, include _run abstract impl now
+    def _run(self, **kwargs):  # type: ignore[no-untyped-def]
+        return func(**kwargs)
+
+    from pydantic import Field as _PydField
+    attrs = {
+        "__module__": __name__,
+        "__annotations__": {
+            "name": str,
+            "description": str,
+            "args_schema": type[BaseModel],
+        },
+        "name": name,
+        "description": description,
+        "args_schema": ArgsModel,
+        "_run": _run,
+    }
+    PyFuncTool = type(f"{name}_Tool", (BaseTool,), attrs)  # type: ignore[misc]
+    return PyFuncTool()
 
 
 def tool_resolve_cik(ticker_or_cik: str) -> Dict[str, Any]:
