@@ -20,7 +20,7 @@ from .sec_edgar import (
     html_to_text,
 )
 from .cleaning import clean_text, extract_tables
-from .extraction_llm import llm_extract_metric
+from .extraction_llm import llm_extract_metric, llm_extract_metric_multi
 from .calculator import compute_metric, compute_derived_metrics
 from .validation import validate_values, validate_extraction_evidence
 from .exporter import export_rows
@@ -45,15 +45,35 @@ def make_tool(func, name: str, description: str):
     We dynamically wrap the function with the @tool decorator to ensure it
     produces a BaseTool instance recognized by CrewAI's pydantic validation.
     """
-    decorated = lc_tool_decorator(name=name)(func)
-    # Inject/override description if supported (older versions different attr)
-    if hasattr(decorated, 'description'):
-        decorated.description = description  # type: ignore[attr-defined]
+    try:
+        decorated = lc_tool_decorator(name=name)(func)  # newer API supports name kw
+    except TypeError:
+        # Some versions require passing description at decoration time or using direct call
+        try:
+            decorated = lc_tool_decorator(func)
+        except Exception:
+            # Final fallback: try alternative signature (name, description)
+            decorated = lc_tool_decorator(name)(func)  # type: ignore[misc]
+    # Try to set metadata where supported
+    if hasattr(decorated, 'name'):
+        try:
+            decorated.name = name  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    if hasattr(decorated, 'description') and description:
+        try:
+            decorated.description = description  # type: ignore[attr-defined]
+        except Exception:
+            pass
     return decorated
 
 
 def tool_resolve_cik(ticker_or_cik: str) -> Dict[str, Any]:
     """Resolve an identifier to a 10-digit CIK."""
+    """Resolve a user-provided ticker or CIK into a canonical CIK and metadata.
+
+    Returns {input, cik, ticker, name} when available.
+    """
     if is_cik(ticker_or_cik):
         cik = normalize_cik(ticker_or_cik)
     else:
@@ -62,12 +82,20 @@ def tool_resolve_cik(ticker_or_cik: str) -> Dict[str, Any]:
 
 
 def tool_list_filings(cik: str, years: List[int], filing_types: List[str]) -> Dict[str, Any]:
+    """List company filings from SEC EDGAR for a CIK filtered by years and form types.
+
+    Returns {cik, years, forms, count, filings[]} where filings are raw metadata records.
+    """
     filings = list_company_filings(cik, years, filing_types)
     return {"cik": cik, "years": years, "forms": filing_types, "count": len(filings), "filings": filings}
 
 
 def tool_download_and_clean_filings(cik: str, filings: List[Dict[str, Any]], limit: int = 3) -> Dict[str, Any]:
     """Download up to `limit` filings, persist cleaned text & tables, return manifest."""
+    """Download a small batch of filings and return cleaned text payloads per filing.
+
+    Returns {cik, count, items[{accession, form, year, text}]}.
+    """
     out: List[Dict[str, Any]] = []
     os.makedirs(settings.data_dir, exist_ok=True)
     for filing in filings[:limit]:
@@ -101,6 +129,10 @@ def tool_download_and_clean_filings(cik: str, filings: List[Dict[str, Any]], lim
 
 
 def tool_rag_select_sections(texts: List[str], query: str) -> Dict[str, Any]:
+    """Select relevant sections via a simple RAG windowing against provided texts for a query.
+
+    Returns {query, sections[], characters}.
+    """
     rag = SimpleRAG(chunk_size=2000, overlap=200)
     sections: List[str] = []
     for idx, text in enumerate(texts):
@@ -110,26 +142,42 @@ def tool_rag_select_sections(texts: List[str], query: str) -> Dict[str, Any]:
 
 
 def tool_llm_extract(text: str, metric: str, hint: Optional[str] = None, form: Optional[str] = None) -> Dict[str, Any]:
-    return llm_extract_metric(text, metric, hint=hint, form=form)
+    """Extract one metric from text using an LLM, returning multi-year mapping when present.
+
+    Returns {metric, found, years{year->{value,name,title,section,currency,evidence}}, value, year, raw[]}.
+    """
+    # Prefer multi-year extraction; falls back to single-year shape via back-compat fields
+    return llm_extract_metric_multi(text, metric, hint=hint, form=form)
 
 
 def tool_compute_metric(formula: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute a single numeric formula from primitive variables.
+
+    Returns {formula, value, variables}.
+    """
     return compute_metric(formula, variables)
 
 
 def tool_compute_derived(calculation_expressions: Dict[str, str], primitive: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute derived metrics year-wise given expressions and primitive values.
+
+    Returns {metrics{metric->{year->value}}}.
+    """
     return compute_derived_metrics(calculation_expressions, primitive)
 
 
 def tool_validate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Validate rows (identifier, metric, year, value, form) for plausibility and consistency."""
     return validate_values(rows)
 
 
 def tool_validate_extraction(extracted: Dict[str, Any], cleaned_texts: List[str]) -> Dict[str, Any]:
+    """Validate that each executive/value in extracted structure appears verbatim in cleaned_texts corpus."""
     return validate_extraction_evidence(extracted, cleaned_texts)
 
 
 def tool_export(rows: List[Dict[str, Any]], fmt: str, name: str) -> Dict[str, Any]:
+    """Export rows to JSON or CSV with a base filename, returning path and count."""
     path = export_rows(rows, fmt, name=name)
     return {"path": path, "format": fmt, "rows": len(rows)}
 
