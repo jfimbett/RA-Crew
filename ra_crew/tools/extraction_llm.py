@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import os
 
 from ..utils.logging_utils import timeit
@@ -46,30 +46,74 @@ def _build_llm(cfg: LLMConfig):
 
 
 SYSTEM_PROMPT = (
-    "You are a meticulous financial data extraction agent. Your job is to thoroughly search the ENTIRE document for the requested metric. "
-    "The hint provided is guidance to help you understand what to look for, but you must examine all relevant sections, tables, and data throughout the document. "
-    "Do NOT just grab the first number you see near the hint words. Look for the most complete, accurate, and contextually appropriate value. "
-    "Search compensation tables, summary tables, footnotes, and detailed breakdowns. "
-    "If multiple values exist for the same metric (e.g., different years), extract the most recent or specifically requested one. "
-    "Do not guess. If genuinely not present after thorough search, return found=false. "
-    "Output strictly as a compact JSON object with keys: found (bool), value (string, raw as shown), currency (string or empty), year (string or empty), section (string or empty), evidence (short snippet showing context)."
+    "You are a meticulous financial data extraction agent for SEC filings. Your task: find the requested metric."
+    " Always examine the ENTIRE provided excerpt (and XML excerpt if present)."
+    " 1. Never rely only on nearby hint terms — scan summary compensation tables, footnotes, narrative discussion, and preceding prior-year rows."
+    " 2. If the requested year is not present, you MUST fall back to the most recent prior year available (e.g. request 2023 but table only shows 2022, 2021, 2020 -> choose 2022)."
+    " 3. Prefer structured tables / XML tagged facts over narrative text."
+    " 4. Do not fabricate values. If absolutely nothing relevant exists, set found=false."
+    " Output strictly COMPACT JSON with keys: found (bool), requested_year (string), extracted_year (string), value (string), currency (string), section (string), evidence (short snippet), fallback_used (bool)."
 )
 
 
-def _chunk(text: str, max_chars: int) -> List[str]:
+def _chunk(text: str, max_chars: int, overlap: int) -> List[str]:
+    """Split text into overlapping character chunks.
+
+    Args:
+        text: Full filing text.
+        max_chars: Maximum characters per chunk.
+        overlap: Characters of backward overlap between consecutive chunks.
+    """
+    if max_chars <= 0:
+        return [text]
     if len(text) <= max_chars:
         return [text]
+    step = max_chars - overlap
+    if step <= 0:
+        step = max_chars
     chunks: List[str] = []
-    step = max_chars - 1000  # overlap
-    i = 0
-    while i < len(text):
+    for i in range(0, len(text), step):
         chunks.append(text[i : i + max_chars])
-        i += step
     return chunks
 
 
+def _extract_field(raw_json: str, keys: List[str]) -> str:
+    """Extract first matching string field from raw JSON-ish text given list of candidate keys (case-insensitive)."""
+    import re
+    for k in keys:
+        pat = rf'"{k}"\s*:\s*"(.*?)"'
+        m = re.search(pat, raw_json, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _parse_bool(raw_json: str, key: str) -> bool:
+    import re, json
+    # Quick direct parse attempt
+    pat = rf'"{key}"\s*:\s*(true|false)'
+    m = re.search(pat, raw_json, flags=re.IGNORECASE)
+    if m:
+        return m.group(1).lower() == "true"
+    # fallback: attempt json loads if clean
+    try:
+        obj = json.loads(raw_json)
+        if isinstance(obj, dict) and key in obj:
+            return bool(obj[key])
+    except Exception:
+        pass
+    return False
+
+
 @timeit
-def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form: Optional[str] = None, xml: Optional[str] = None) -> Dict[str, Any]:
+def llm_extract_metric(
+    text: str,
+    metric: str,
+    hint: Optional[str] = None,
+    form: Optional[str] = None,
+    xml: Optional[str] = None,
+    requested_year: Optional[int] = None,
+) -> Dict[str, Any]:
     """Use an LLM to extract a metric from filing text without regex.
 
     Returns dict with keys: metric, value, context, section, currency, year, confidence (heuristic), raw_json.
@@ -81,6 +125,8 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
         f"Metric: {metric}",
         f"Filing type: {form or 'Unknown'}",
     ]
+    if requested_year is not None:
+        user_intro_parts.append(f"Requested year: {requested_year}")
     if hint:
         user_intro_parts.append(f"Hint: {hint}")
     intro = "\n".join(user_intro_parts)
@@ -91,16 +137,22 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
     if xml_excerpt:
         xml_excerpt = xml_excerpt[:6000]
     
-    for chunk in _chunk(text, max_chars=12000):
+    # Configurable chunking via env vars
+    max_chars = int(os.getenv("LLM_CHUNK_SIZE", "12000"))
+    overlap = int(os.getenv("LLM_CHUNK_OVERLAP", "1000"))
+
+    for chunk in _chunk(text, max_chars=max_chars, overlap=overlap):
         if xml_excerpt:
             prompt = (
-                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, and data.\n\n"
+                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, data, and prior-year rows.\n"
+                "If requested_year is absent, pick most recent earlier year.\n\n"
                 f"XML (excerpt):\n{xml_excerpt}\n\nText (excerpt):\n" + chunk[:8000] + 
                 "\n\nIf XML is present, prefer numeric facts from it. Search thoroughly before responding. Return JSON only."
             )
         else:
             prompt = (
-                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, and data.\n\n"
+                f"{intro}\n\nIMPORTANT: Search this entire text excerpt thoroughly. The hint guides you but examine ALL tables, sections, data, and prior-year rows.\n"
+                "If requested_year is absent, pick most recent earlier year.\n\n"
                 f"Text (excerpt):\n" + chunk[:12000] + 
                 "\n\nSearch thoroughly before responding. Return JSON only."
             )
@@ -140,19 +192,19 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
             "confidence": 0.0,
         }
 
-    # Lightweight field scraping from JSON-ish content
-    def _grab(key: str) -> str:
-        import re
+    raw = best["raw_json"]
+    value = _extract_field(raw, ["value"]) or ""
+    currency = _extract_field(raw, ["currency", "curr", "unit"]) or ""
+    extracted_year = _extract_field(raw, ["extracted_year", "year"]) or ""
+    requested_year_str = str(requested_year) if requested_year is not None else _extract_field(raw, ["requested_year"]) or ""
+    section = _extract_field(raw, ["section", "table", "source_section"]) or ""
+    evidence = _extract_field(raw, ["evidence", "context", "snippet"]) or ""
+    fallback_used = _parse_bool(raw, "fallback_used") or (
+        bool(requested_year_str) and extracted_year and requested_year_str != extracted_year
+    )
 
-        pat = rf'\"{key}\"\s*:\s*\"(.*?)\"'
-        m = re.search(pat, best["raw_json"], flags=re.IGNORECASE | re.DOTALL)
-        return m.group(1).strip() if m else ""
-
-    value = _grab("value")
-    currency = _grab("currency")
-    year = _grab("year")
-    section = _grab("section")
-    evidence = _grab("evidence")
+    # Confidence heuristic: value present + extracted_year present
+    confidence = 0.9 if value and extracted_year else (0.7 if value else 0.0)
 
     return {
         "metric": metric,
@@ -160,6 +212,8 @@ def llm_extract_metric(text: str, metric: str, hint: Optional[str] = None, form:
         "context": evidence,
         "section": section,
         "currency": currency,
-        "year": year,
-        "confidence": 0.8 if value else 0.0,
+        "requested_year": requested_year_str,
+        "extracted_year": extracted_year,
+        "fallback_used": fallback_used,
+        "confidence": confidence,
     }

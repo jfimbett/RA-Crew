@@ -308,24 +308,38 @@ def main(
                                     xml_content = xf.read()
                             except Exception:
                                 xml_content = None
-                        res = llm_extract_metric(doc["text"], m, hint=hint, form=doc["meta"].get("form"), xml=xml_content)
-                        if verbose:
-                            tqdm.write(f"[DEBUG] Extracted {m}: value='{res.get('value','')[:120]}' form={doc['meta'].get('form')} year={doc['meta']['filingDate'][:4]}")
-                        rows.append(
-                            {
-                                "identifier": identifier,
-                                "ticker": ticker,
-                                "cik": cik,
-                                "year": int(doc["meta"]["filingDate"][:4]),
-                                "metric": res["metric"],
-                                "value": res["value"],
-                                "context": res["context"],
-                                "form": doc["meta"]["form"],
-                                "file_path_text": doc["meta"].get("paths", {}).get("text"),
-                                "file_path_tables": doc["meta"].get("paths", {}).get("tables"),
-                                "file_path_xml": doc["meta"].get("paths", {}).get("xml"),
-                            }
+                        filing_year_int = int(doc["meta"]["filingDate"][:4])
+                        res = llm_extract_metric(
+                            doc["text"],
+                            m,
+                            hint=hint,
+                            form=doc["meta"].get("form"),
+                            xml=xml_content,
+                            requested_year=year,
                         )
+                        if verbose:
+                            tqdm.write(
+                                f"[DEBUG] Extracted {m}: value='{res.get('value','')[:120]}' requested={year} extracted={res.get('extracted_year','')} form={doc['meta'].get('form')} filing_year={filing_year_int}"
+                            )
+                        rows.append({
+                            "identifier": identifier,
+                            "ticker": ticker,
+                            "cik": cik,
+                            "filing_year": filing_year_int,
+                            "requested_year": res.get("requested_year"),
+                            "extracted_year": res.get("extracted_year"),
+                            "fallback_used": res.get("fallback_used"),
+                            "metric": res["metric"],
+                            "value": res["value"],
+                            "context": res["context"],
+                            "section": res.get("section"),
+                            "currency": res.get("currency"),
+                            "confidence": res.get("confidence"),
+                            "form": doc["meta"]["form"],
+                            "file_path_text": doc["meta"].get("paths", {}).get("text"),
+                            "file_path_tables": doc["meta"].get("paths", {}).get("tables"),
+                            "file_path_xml": doc["meta"].get("paths", {}).get("xml"),
+                        })
                 pbar.set_description(f"Validating and exporting for {identifier}")
                 pbar.refresh()
                 

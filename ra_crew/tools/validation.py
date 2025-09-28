@@ -55,49 +55,55 @@ def validate_values(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     
     for r in rows:
         ticker = r.get("ticker", "")
-        year = r.get("year", "")
+        requested_year = r.get("requested_year") or r.get("year") or r.get("filing_year")
+        extracted_year = r.get("extracted_year") or r.get("year")
         metric = r.get("metric", "")
         value_str = r.get("value", "")
         form = r.get("form", "")
         context = r.get("context", "")
-        
-        key = (ticker, year, metric)
+        fallback_used = r.get("fallback_used")
+
+        year_key = extracted_year or requested_year or ""
+        key = (ticker, year_key, metric)
         
         # Check for duplicates
         if key in seen:
-            issues.append(f"Duplicate entry for {ticker} {year} {metric}")
+            issues.append(f"Duplicate entry for {ticker} {year_key} {metric}")
         else:
             seen.add(key)
         
         # Check for missing values
         if not value_str or value_str.strip() == "":
-            issues.append(f"Missing value for {ticker} {year} {metric}")
+            issues.append(f"Missing value for {ticker} {year_key} {metric}")
             continue
         
         # Extract numeric value for validation
         numeric_value = _extract_numeric_value(value_str)
-        
+
         # Check if extraction makes sense
         if numeric_value == 0.0 and value_str not in ["0", "$0", "None", "N/A"]:
-            warnings.append(f"Could not parse numeric value from '{value_str}' for {ticker} {year} {metric}")
-        
+            warnings.append(f"Could not parse numeric value from '{value_str}' for {ticker} {year_key} {metric}")
+
         # Track values by metric for cross-validation
         if metric not in value_stats:
             value_stats[metric] = []
         if numeric_value > 0:
             value_stats[metric].append(numeric_value)
-        
+
         # Reasonableness checks
         reasonableness_issues = _validate_compensation_reasonableness(numeric_value, metric)
-        issues.extend([f"{ticker} {year}: {issue}" for issue in reasonableness_issues])
-        
+        issues.extend([f"{ticker} {year_key}: {issue}" for issue in reasonableness_issues])
+
         # Check if context seems relevant
         if context and len(context.strip()) < 10:
-            warnings.append(f"Very short context for {ticker} {year} {metric}: '{context}'")
+            warnings.append(f"Very short context for {ticker} {year_key} {metric}: '{context}'")
+
+        if fallback_used and requested_year and extracted_year and str(requested_year) != str(extracted_year):
+            warnings.append(f"Fallback year used for {ticker} {metric}: requested {requested_year} -> extracted {extracted_year}")
         
         # Validate form type matches expected content
         if 'compensation' in metric.lower() and form and 'DEF 14A' not in form and 'proxy' not in form.lower():
-            warnings.append(f"Compensation data extracted from {form} instead of proxy (DEF 14A) for {ticker} {year}")
+            warnings.append(f"Compensation data extracted from {form} instead of proxy (DEF 14A) for {ticker} {year_key}")
     
     # Cross-validation: check for outliers within each metric
     for metric, values in value_stats.items():
