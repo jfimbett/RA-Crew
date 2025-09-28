@@ -48,6 +48,96 @@ def _read_lines(path: str) -> List[str]:
         return [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
 
 
+def _write_run_review_log(
+    *,
+    interactive: bool,
+    raw_params: dict,
+    use_crew: bool,
+    run_results: List[dict],
+    output_format: str,
+    raw_output: bool,
+) -> str:
+    """Write a consolidated run log with parameters, agent activity, and outputs.
+
+    Overwrites on each run as requested.
+    Returns the path to the log file.
+    """
+    os.makedirs(settings.outputs_dir, exist_ok=True)
+    log_path = os.path.join(settings.outputs_dir, "run_review.log")
+
+    lines: List[str] = []
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
+    lines.append(f"=== RA-Crew Run Review ({now_utc.isoformat().replace('+00:00','Z')}) ===\n")
+    lines.append("-- CLI Parameters --")
+    for k, v in raw_params.items():
+        lines.append(f"{k}: {v}")
+    lines.append("")
+
+    if interactive:
+        lines.append("[Interactive mode] Parameters captured above reflect interactive selections.")
+        lines.append("")
+
+    # Per-company outputs
+    lines.append("-- Outputs --")
+    for entry in run_results:
+        try:
+            identifier = entry.get("identifier") or entry.get("ticker")
+            year = entry.get("year") or (entry.get("years") or [None])[0]
+            ticker = entry.get("ticker") or identifier
+            lines.append(f"Company: {identifier} Year: {year}")
+
+            if use_crew:
+                # Reconstruct expected minimal output path from convention
+                base_name = f"crew_results_{ticker}_{year}"
+                out_path = os.path.join(settings.outputs_dir, f"{base_name}.{output_format}")
+                lines.append(f"Minimal output: {out_path}")
+                if os.path.exists(out_path) and output_format.lower() == "json":
+                    try:
+                        with open(out_path, "r", encoding="utf-8") as fh:
+                            content = fh.read()
+                        lines.append("Output JSON:")
+                        lines.append(content)
+                    except Exception as e:
+                        lines.append(f"[WARN] Failed to read output file: {e}")
+                if raw_output:
+                    raw_sidecar = os.path.join(settings.outputs_dir, f"{base_name}.raw.txt")
+                    lines.append(f"Raw sidecar: {raw_sidecar}")
+            else:
+                out_path = entry.get("output")
+                if out_path:
+                    lines.append(f"Output file: {out_path}")
+                    if out_path.lower().endswith(".json") and os.path.exists(out_path):
+                        try:
+                            with open(out_path, "r", encoding="utf-8") as fh:
+                                content = fh.read()
+                            lines.append("Output JSON:")
+                            lines.append(content)
+                        except Exception as e:
+                            lines.append(f"[WARN] Failed to read output file: {e}")
+        finally:
+            lines.append("")
+
+    # Agent activity log (if present)
+    if use_crew:
+        crew_log = os.path.join(settings.outputs_dir, "crew_execution.log")
+        lines.append("-- Agent Activity Log --")
+        lines.append(f"Path: {crew_log}")
+        if os.path.exists(crew_log):
+            try:
+                with open(crew_log, "r", encoding="utf-8") as fh:
+                    agent_log = fh.read()
+                lines.append(agent_log)
+            except Exception as e:
+                lines.append(f"[WARN] Failed to read agent log: {e}")
+        lines.append("")
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return log_path
+
+
 @app.command()
 def main(
     companies: Optional[str] = typer.Option(
@@ -64,6 +154,11 @@ def main(
     interactive: bool = typer.Option(False, help="Launch interactive wizard"),
     verbose: bool = typer.Option(False, help="Increase verbosity"),
     use_crew: bool = typer.Option(False, help="Use CrewAI agents (shows agent activity)"),
+    raw_output: bool = typer.Option(False, help="Also save raw Crew output alongside minimal flattened output"),
+    retrieval_method: str = typer.Option(
+        "llm",
+        help="Retrieval method when using crew: 'llm' (direct full-document) or 'rag' (heuristic context, experimental)",
+    ),
 ):
     """Run the SEC filings crew over the specified companies and years."""
     # Initialize logging with appropriate level
@@ -89,6 +184,11 @@ def main(
         metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
         # Ask for hint text (recommended)
         hint = Prompt.ask("Optional free-text hint (press Enter to skip)", default="") or None
+        if use_crew:
+            retrieval_method = Prompt.ask(
+                "Retrieval method (llm/rag)",
+                default=(retrieval_method if retrieval_method in ("llm", "rag") else "llm"),
+            )
         companies = f"{id_input}:{year}"
         metrics = metric
 
@@ -193,10 +293,14 @@ def main(
                         "filing_types": filing_types,
                         "metrics": metric_list,
                         "hint": hint,
-                        "output_format": output_format
+                        "output_format": output_format,
+                        "raw_output": raw_output,
+                        "retrieval": retrieval_method,
                     }
                     
                     # Execute the crew - this will show agent activity
+                    if retrieval_method == "rag":
+                        typer.echo("[WARN] RAG retrieval is experimental and may miss values; consider using 'llm'.")
                     crew_result = crew.kickoff(inputs=inputs)
                     
                     # Process crew results
@@ -372,6 +476,31 @@ def main(
     with open(out_path, "wb") as f:
         f.write(orjson.dumps(results, option=orjson.OPT_INDENT_2))
     typer.echo(f"Saved summary to {out_path}")
+
+    # Write consolidated run review log (overwrite each run)
+    raw_params = {
+        "interactive": interactive,
+        "companies": companies,
+        "companies_file": companies_file,
+        "filings": filings,
+        "metrics": metrics,
+        "metrics_file": metrics_file,
+        "output_format": output_format,
+        "hint": hint,
+        "verbose": verbose,
+        "use_crew": use_crew,
+        "raw_output": raw_output,
+        "retrieval": retrieval_method,
+    }
+    review_path = _write_run_review_log(
+        interactive=interactive,
+        raw_params=raw_params,
+        use_crew=use_crew,
+        run_results=results,
+        output_format=output_format,
+        raw_output=raw_output,
+    )
+    typer.echo(f"Wrote run review log to {review_path}")
 
 
 if __name__ == "__main__":
