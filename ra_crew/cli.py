@@ -155,10 +155,6 @@ def main(
     verbose: bool = typer.Option(False, help="Increase verbosity"),
     use_crew: bool = typer.Option(False, help="Use CrewAI agents (shows agent activity)"),
     raw_output: bool = typer.Option(False, help="Also save raw Crew output alongside minimal flattened output"),
-    retrieval_method: str = typer.Option(
-        "llm",
-        help="Retrieval method when using crew: 'llm' (direct full-document) or 'rag' (heuristic context, experimental)",
-    ),
 ):
     """Run the SEC filings crew over the specified companies and years."""
     # Initialize logging with appropriate level
@@ -184,11 +180,7 @@ def main(
         metric = Prompt.ask("Metric to extract", default="Total CEO compensation")
         # Ask for hint text (recommended)
         hint = Prompt.ask("Optional free-text hint (press Enter to skip)", default="") or None
-        if use_crew:
-            retrieval_method = Prompt.ask(
-                "Retrieval method (llm/rag)",
-                default=(retrieval_method if retrieval_method in ("llm", "rag") else "llm"),
-            )
+        # RAG removed; no retrieval method prompt
         companies = f"{id_input}:{year}"
         metrics = metric
 
@@ -295,12 +287,9 @@ def main(
                         "hint": hint,
                         "output_format": output_format,
                         "raw_output": raw_output,
-                        "retrieval": retrieval_method,
                     }
                     
                     # Execute the crew - this will show agent activity
-                    if retrieval_method == "rag":
-                        typer.echo("[WARN] RAG retrieval is experimental and may miss values; consider using 'llm'.")
                     crew_result = crew.kickoff(inputs=inputs)
                     
                     # Process crew results
@@ -311,7 +300,7 @@ def main(
                         "year": year,
                         "crew_output": str(crew_result),
                         "hint": hint,
-                        "processing_method": "CrewAI with RAG",
+                        "processing_method": "CrewAI full-document context",
                         "filing_types": filing_types,
                         "metrics": metric_list
                     }
@@ -490,7 +479,7 @@ def main(
         "verbose": verbose,
         "use_crew": use_crew,
         "raw_output": raw_output,
-        "retrieval": retrieval_method,
+    "retrieval": "llm",
     }
     review_path = _write_run_review_log(
         interactive=interactive,

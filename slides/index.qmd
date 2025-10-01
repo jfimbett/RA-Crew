@@ -1,0 +1,232 @@
+---
+title: "Creating your own Research Assistant AI Agent Crew"
+subtitle: "Using LLMs to collect unstructured data"
+author: "Juan F. Imbet"
+institute: "Paris Dauphine University-PSL"
+format:
+  revealjs:
+    theme: white
+    css: style.css
+    slide-number: true
+    chalkboard: true
+    preview-links: auto
+    footer: "Creating your own Research Assistant AI Agent Crew"
+    include-in-header: tikzjax.html
+execute:
+  enabled: false
+---
+
+## Agenda {.agenda}
+
+- LLMs: Overview
+- AI Agents
+- AI Crews
+- Creating your Crew to extract unstructured data from Financial Documents.
+
+---
+
+## Large Language Models (Preliminaries)
+
+- LLMs were born from the need to have reliable language translation systems. 
+- The task of automatic translation is intuitive, you give a machine a sequence of words in one language, you expect to receive another sequence of words in another language. 
+- In the hood, words would be converted to mathematical objects, passed through a ML "black box" and return another sequence of mathematical objects that then are mapped again into words. 
+- Why is this hard?
+    - Not clear how to represent words mathematically.
+    - The order of words matters, both in the input and output sequences.
+    - Sequences won't normally have the same length, grammar across languages is different. 
+- Pre LLM attempts included
+    - Recursive Neural Networks (RNNs): Unfolded networks that could handle sequences of arbitrary length.
+    - Long Short Term Memory (LSTM): A special kind of RNN that could learn long-term dependencies. 
+    - Training of RNNs is difficult as sequences of different lengths are presented. 
+- Intellectual breakthrough: Attention Mechanism (2017)
+    - Fixed length representation of sequences (using padding and masking)
+    - Order matters, and words' meaning depends on context.
+
+---
+
+## What does an LLM look under the hood?
+
+1. Text is tokenized (broken into smaller pieces, subwords, words, or characters).
+2. Tokens are converted into high dimensional vectors using a one hot encoding. If your vocabulary has $|V|$ different tokens, the encoding of token $i$ is a vector of zeros with a one in position $i$.
+3. These vectors are generally too sparse and high dimensional, so LLMs transform them into vectors into a lower dimension (e.g. from 50,000 to 1,024).
+3. This transformation is learned during training, e.g. what is the best way to represent words into vectors so that the model is more accurate?
+4. Embeddings have a direction and magnitude, so they can be compared using linear algebra. 
+5. The position of a token in a sentence is also codified and added to the embedding. 
+6. All these vectors are then passed through a series of neural networks in which all tokens "listen" to each other. 
+7. How much they should listen to each other is learned. 
+9. A big vector of dimension $|V|$ is generated in which larger values are mapped into larger probabilities. 
+10. A token is randomly sampled from this distribution and this token gets added to the original sequence.
+11. The process is repeated until a stopping criterion is met (e.g. max length, special stop token, etc.).
+
+---
+
+## Training 
+
+- LLMs are trained using a self-supervised learning approach.
+- The model is given a sequence of tokens and is trained to predict the next token in the sequence.
+- Pick parameters to guess as many tokens as possible correctly.
+- Great for tasks like text generation, and translation. 
+- Not so great for tasks that require reasoning, math, or specific knowledge.
+- Specific tasks are learned by fine-tuning the model using examples of the task at hand.
+    - For math, pass lots of math problems and their solutions.
+    - For coding, pass lots of code snippets and their explanations.
+    - For entity recognition, pass lots of texts with entities highlighted.
+- Fine-tuning is expensive, and requires lots of data. 
+
+---
+
+## Reasoning LLMs
+
+- First generation LLMs try to predict the next token in a sequence.
+- This works well for some tasks but its always a "greedy" approach. 
+- Reasoning models generate Chains of Thought (CoT) instead of individual sequences of tokens. The best CoT is selected based on how well it solves the task at hand (reinforced learning). 
+- Imagine you want to plan a road trip visiting every single city in spain, but you want to save on gas. 
+    - A greedy approach would be to always visit the closest city next. 
+    - A reasoning approach would be to plan the entire trip first, and then execute it.
+    - These solutions would not necessarily be the same, the **global** optimum would only be achieved by the reasoning approach.
+- In March 2025, OpenAI raised 40 billion dollars in a funding round (led by SoftBank) at a 300 billion post-money valuation.
+- Most of this money went to buy infrastructure (servers, GPUs, etc), pay engineers, and to pay people to solve reasoning problems to use for training.
+- DeepSeek managed to create the first open source reasoning LLM, at a fraction of the cost and size. 
+     - Impressive engineering innovation using non-NVIDIA GPUs. 
+     - Part of their training sample was generated using OpenAI models. 
+
+---
+
+## Data Retrieval
+
+- Text contains highly ***unstructured*** data. 
+- This data is hard to extract using only Natural Language Processing (NLP) techniques.
+- LLMs can be used to extract this data, if they are trained to do so.
+- E.g. extracting the noun in the following text 
+```text
+Identify the noun in the following text:
+The red Ferrari is fast.
+```
+- Traditional NLP techniques would identify the words, and maybe have a list of nouns to match. 
+- LLMs can be trained to identify the noun, by giving them examples of texts with the noun highlighted.
+```text
+Identify the noun in the following text:
+The red Ferrari is fast.
+
+For example, in the text "The cat sat on the mat", the noun is "cat".
+```
+- Models can achieve tasks by providing examples, or even without if they have been trained on similar tasks.
+- This is called few-shot learning, or zero-shot learning.
+
+---
+
+## External Knowledge and Tools
+
+- Early LLMs were trained on a fixed dataset, and suffered from large **hallucinations**.
+- LLMs won't care if the content they generate is true, they will just generate the most likely token. 
+- Accessing external knowledge and tools is a way to mitigate hallucinations.
+- API calls: LLMs can be trained to call APIs to get real time information. 
+    - E.g. weather, stock prices, news, etc.
+    - They will normally generate code to call the API, and then give instructions to run it. 
+- Retrieval Augmented Generation (RAG): LLMs can be trained to search for information in a database or document collection, and then use that information to generate text.
+    - E.g. answer questions only using legal documents. 
+- Any programming **function** that the LLM can learn how and when to call could be a tool. 
+- Useful when doing math, early LLMs were terrible at it. But they can just pass individual numbers to a function e.g. in python, to do the sum for them. 
+
+---
+
+## AI Agents
+
+- Have you ever been using ChatGPT to code, and you followed these steps?
+    1. Ask ChatGPT to generate code for you.
+    2. Copy the code into your IDE.
+    3. Run the code, and get an error message.
+    4. Copy the error message back into ChatGPT, and ask it to fix the code.
+    5. Repeat until the code works.
+- This is an example of an AI agent, you are the **agent** that is using ChatGPT to help you code. 
+- An AI agent is a system that can perceive its environment, reason about it, and take actions to achieve a goal. 
+- The LLM is the **brain** of the agent, it can reason about the environment and decide what actions to take.
+- The agent can also have access to tools, external knowledge, and will iterate until the goal is achieved.
+- The iteration is done by **self-prompting**, the agent will generate its own prompts to ask the LLM for help.
+
+---
+
+## AI Agent Specialization
+
+- Research has shown that AI agents can be more effective if they are given a background in a specific domain.
+    - Better context framing (Schema activation): When you tell an agent *** you are an expert in finance**, you are forcing it to draw knowledge that aligns with that role. The role activates the right parts of its latent space (schemas), filtering out irrelevant tokens or reasoning paths. 
+    - Improve task adherence: Roles sharpen its objective and structures the type of output. 
+    - In multi-agent systems, backgrounds ensure division of labor. 
+
+- Wei et al. (2022), Chain-of-Thought Prompting Elicits Reasoning in Large Language Model.
+- Honovich et al. (2023), Instruction Tuning for Large Language Models
+
+## Contexts and prompts
+
+- Prompts are explicit text that you give the model at inference time. 
+```bash
+You are an expert in finance. Explain the Modigliani-Miller theorem in simple terms.
+```
+- Context is the entire set of information available to the model during generation. 
+     - Prompt
+     - Any `system` messages or role specifications. 
+     - Conversation history (up to the model's context window).
+     - External documents or data retrieved (RAG).
+
+---
+
+## AI Crews
+
+- An AI Crew is a collection of specialized AI agents that work together to achieve a common goal.
+- Each agent has a specific role and expertise, and they communicate and collaborate to solve complex problems.
+- Agents can ***delegate*** tasks to other agents when they need help or when a task is outside their expertise.
+- Crews can be designed to be modular and scalable, allowing for easy addition or removal of agents as needed.
+- Crews can also be designed to be adaptive, allowing agents to learn and improve their performance over time.
+- Many startups where created around the idea of agents, generating templates of sequences of prompts to solve specific problems. 
+
+---
+
+## AI Crews in Practice
+
+- We will use the following python libraries. 
+    - [LangChain](https://python.langchain.com/docs/get_started/introduction.html): Framework for building applications with LLMs through composability (chains, agents, prompts, memory, etc.). 
+    - [CrewAI](https://crewai.com): A platform for building and deploying AI agents.
+- You could create your own agents by ***iterating*** over prompts. 
+- `LangChain` deals with API calls, python functions, storage, long, and short term memory. 
+- `CrewAI` deals with agent orchestration, communication, and delegation.
+
+## What are agents in CrewAI?
+
+Agents have several components:
+- Backgrounds 
+- Roles (Tasks)
+- Tools (APIs, functions, etc.)
+- Memory (Short and long term)
+- LLM (OpenAI, Anthropic, Groq, etc.)
+- Delegation. 
+
+Crews 
+- Collections of agents that can talk to each other.
+
+---
+
+## Example Crew: Retrieve unstructured data from SEC Filings
+
+- Companies with publicly traded securities in the US are required to file periodic reports with the Securities and Exchange Commission (SEC).
+- These reports are the main source for investors and researchers. 
+- Commercial databases have historically extracted, cleaned, and corrected, this information over years. Their licenses are one of the largest costs for financial institutions and universities. 
+- Top schools have armies of Research Assistants (RAs) that could manually extract this information.
+- AI could help balance the scales across institutions.
+- We will create a crew to retrieve publicly and unstructured available data (e.g. Total CEO Compensation) from these files, instead of using ExecuComp. 
+
+---
+
+## The Design 
+
+Agents
+- Graduate Assistant (Supervisor) — Plans and oversees the pipeline; coordinates agent hand-offs.
+- Data Retriever — Retrieves SEC EDGAR filings (HTML, metadata) for ticker/years/types.
+- Data Cleaner — Normalizes HTML → clean text and extracts table previews.
+- Financial Data Extractor — Extracts only requested metrics from the provided content.
+- Data Calculator — Computes exact totals from listed components when totals aren’t explicit.
+- Financial Data Validation Analyst — Validates/cleans JSON; enforces requested metrics only; strips formatting; nulls unverifiable values.
+- Data Exporter — Prepares final flattened rows and returns validated JSON for saving.
+
+Note
+- Under the hood, Python tools support retrieval, cleaning, and export; agents orchestrate the logic and hand-offs.
+

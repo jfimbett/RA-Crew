@@ -21,7 +21,6 @@ from ..tools.sec_edgar import (
     html_to_text,
 )
 from ..tools.cleaning import clean_text, extract_tables
-from ..tools.rag import SimpleRAG
 
 
 # ---------------------------------------------------------------------------
@@ -101,34 +100,87 @@ def retrieve_sec_data(ticker: str, years: List[int], filing_types: List[str]) ->
 # Crew construction
 # ---------------------------------------------------------------------------
 def build_crew() -> Crew:
-    """Construct Crew with dynamic prompts allowing only requested metrics."""
+    """Construct Crew with seven agents in a sequential pipeline.
+
+    Agents:
+    - Graduate Assistant Supervisor (orchestrates and plans)
+    - Data Retriever (retrieve SEC filings)
+    - Data Cleaner (normalize text and parse tables)
+    - Financial Data Extractor (extract requested metrics from content)
+    - Data Calculator (compute exact totals or derived values when needed)
+    - Financial Data Validation Analyst (validate/clean JSON strictly)
+    - Data Exporter (prepare/save final output)
+    """
     setup_logging()
 
-    researcher = Agent(
-        role="Financial Data Researcher",
-        goal=(
-            "Extract ONLY requested financial metrics from SEC filings without adding extras; never invent values. "
-            "Every number you output must be seen verbatim in the provided content or be an exact sum of visible components."
-        ),
+    # Orchestrator
+    supervisor = Agent(
+        role="Graduate Assistant Supervisor",
+        goal="Plan and oversee the data pipeline from retrieval to export; coordinate agents to achieve the goal.",
         backstory=(
-            "You scan SEC filings (10-K, DEF 14A, etc.) to locate precise tabular or narrative data for "
-            "user-specified metrics. If verification is not possible from the provided content, you set the value to null."
+            "You are a diligent graduate assistant orchestrating a research pipeline. "
+            "You design the steps, ensure hand-offs between agents, and keep scope focused on requested metrics."
         ),
+        allow_delegation=True,
+        verbose=False,
+    )
+
+    # Retrieval & cleaning stages (tool-backed by Python functions but represented as agents)
+    retriever = Agent(
+        role="Data Retriever",
+        goal="Retrieve relevant SEC filings (HTML) for the given ticker, years, and filing types.",
+        backstory="You locate and fetch filings content and metadata from EDGAR.",
         allow_delegation=False,
         verbose=False,
     )
 
-    analyst = Agent(
+    cleaner = Agent(
+        role="Data Cleaner",
+        goal="Normalize HTML to text and extract relevant tables for later parsing.",
+        backstory="You convert noisy HTML to clean text and compact table previews.",
+        allow_delegation=False,
+        verbose=False,
+    )
+
+    # Extraction, calculation, validation, export
+    extractor = Agent(
+        role="Financial Data Extractor",
+        goal=(
+            "Extract ONLY requested metrics from filings content; never invent values; "
+            "use exact numbers seen or precise sums of visible components."
+        ),
+        backstory="You carefully read SEC filings and isolate just the requested metrics.",
+        allow_delegation=False,
+        verbose=False,
+    )
+
+    calculator = Agent(
+        role="Data Calculator",
+        goal="Where totals are not explicit, compute exact sums from listed components from the same context.",
+        backstory="You aggregate components into exact totals when appropriate (no estimates).",
+        allow_delegation=False,
+        verbose=False,
+    )
+
+    validator = Agent(
         role="Financial Data Validation Analyst",
         goal="Validate JSON strictly contains only requested metrics with accurate year/value pairs",
         backstory=(
-            "You ensure structural correctness, strip formatting from numbers, remove unrequested metrics, "
-            "and set absent metrics to null without invention."
+            "You ensure structural correctness, strip formatting, remove unrequested metrics, and set absent metrics to null."
         ),
         allow_delegation=False,
         verbose=False,
     )
 
+    exporter = Agent(
+        role="Data Exporter",
+        goal="Prepare final flattened rows and save to the requested format (JSON/CSV).",
+        backstory="You finalize outputs for downstream analysis and storage.",
+        allow_delegation=False,
+        verbose=False,
+    )
+
+    # Shared example block for JSON shape
     example_block = (
         "Example JSON (ONLY metrics in {metrics}):\n"
         "{\n"
@@ -148,45 +200,92 @@ def build_crew() -> Crew:
         "}"
     )
 
-    research_task = Task(
+    # Tasks
+    plan_task = Task(
+        description=(
+            "Create a concise plan for the pipeline given: ticker={ticker} years={years} types={filing_types} metrics={metrics}.\n"
+            "Steps: retrieve -> clean -> extract -> calculate -> validate -> export. Focus only on requested metrics. Return a short checklist."
+        ),
+        agent=supervisor,
+        expected_output="Short plan with ordered steps and notes",
+    )
+
+    retrieve_task = Task(
+        description=(
+            "Retrieve relevant filings for ticker={ticker}, years={years}, types={filing_types}.\n"
+            "If available, use provided seed context: {sec_retrieval_hint}.\n"
+            "Return a compact JSON with a 'documents' array (form, filing_date, url, primary_document)."
+        ),
+        agent=retriever,
+        expected_output="JSON with documents metadata",
+        context=[plan_task],
+    )
+
+    clean_task = Task(
+        description=(
+            "Convert HTML to clean text and extract compact table previews for each document.\n"
+            "Use provided raw content if present. Return a JSON mirroring 'documents' but with 'text' and 'tables' fields populated."
+        ),
+        agent=cleaner,
+        expected_output="JSON with documents including text and tables",
+        context=[retrieve_task],
+    )
+
+    extract_task = Task(
         description=(
             "You are given relevant sections from ONE SEC filing (10-K, DEF 14A, etc.). Extract ONLY metrics in {metrics}.\n"
             "Context: ticker={ticker} years={years} types={filing_types} hint={hint}.\n"
             "Important year rule: The provided 'years' are ONLY used to select which filing(s) to open. Do NOT assume the metric must exist for that/those year(s).\n"
             "Instructions:\n"
             "1. Treat all provided snippets as one filing. Parse the ENTIRE filing content (tables + narrative) and reconstruct multi-line titles when needed.\n"
-            "2. For each requested metric, include EXACTLY the fiscal years that are actually reported in THIS filing (e.g., current year and prior comparative years). Do not invent years.\n"
-            "3. Prefer realized compensation totals from authoritative tables such as the 'Summary Compensation Table' or equivalent executive compensation tables.\n"
-            "   - If a 'Total' column is explicitly shown for the CEO/PEO row, use it.\n"
-            "   - If no explicit 'Total' is shown, compute it as an exact sum of clearly listed components in THIS filing (salary, bonus, stock/option awards, non-equity incentive, pension/change in pension value, all other). Use only numbers found in the same context.\n"
-            "   - Do NOT use forward-looking, target, proposed, or 'future equity award decision' amounts as realized compensation. Only report values tied to past fiscal years disclosed in the filing.\n"
-            "4. Numbers must be exact (no $, commas, or text). Every numeric value MUST appear verbatim in the content or be an exact sum of components from the same table/section. If you cannot verify a year's value, set it to null.\n"
-            "5. If a requested metric is absent for ALL years in the filing, set that metric to null (do not list empty year objects).\n"
-            "6. OUTPUT VALID JSON ONLY. Top-level keys must be EXACTLY the requested metrics.\n"
-            "7. NEVER add extra metrics or years that are not present.\n\n"
+            "2. For each requested metric, include EXACTLY the fiscal years that are actually reported in THIS filing. Do not invent years.\n"
+            "3. Prefer realized compensation totals from authoritative tables such as the 'Summary Compensation Table' or equivalent tables.\n"
+            "4. Numbers must be exact (no $, commas, or text). Values must appear verbatim or be exact sums of components from the same context.\n"
+            "5. If a requested metric is absent for ALL years, set that metric to null.\n"
+            "6. OUTPUT VALID JSON ONLY. Top-level keys must be EXACTLY the requested metrics.\n\n"
             "FILING CONTENT START:\n{sec_filing_content}\nFILING CONTENT END.\n\n"
-            "For each year entry you output, include 'source_url' (required) and 'page' if discernible from the context header; 'source' should be a brief table/section label when evident.\n"
+            "For each year entry include 'source_url' and 'page' if discernible; 'source' can be a brief table/section label.\n"
             f"{example_block}\n"
             "Return ONLY the JSON."
         ),
-        agent=researcher,
+        agent=extractor,
         expected_output="JSON mapping requested metrics -> {year: {value,...}} or null",
+        context=[clean_task],
     )
 
-    analysis_task = Task(
+    calculate_task = Task(
         description=(
-            "Validate and clean the researcher JSON for EXACT keys in {metrics}.\n"
-            "- The provided 'years' were ONLY used to select the filing; do not require those years in output.\n"
-            "- Keep ONLY years that are evidenced in THIS filing's content.\n"
-            "- Prefer totals from realized compensation tables (e.g., 'Summary Compensation Table').\n"
-            "- Reject values that appear to come from forward-looking/target/proposed/'future equity award decision' sections unless they clearly state actual totals for past fiscal years.\n"
-            "- Every numeric value must appear verbatim in the content or be an exact sum of listed components in the same context. If unverifiable, set to null.\n"
-            "- Strip $ and commas. No extra text. Return VALID JSON only.\n\n"
+            "Given the extracted JSON, where totals are missing but components exist, compute exact sums strictly from the same context.\n"
+            "Do NOT introduce new years or metrics. Return JSON in the same shape, updated only where sums are certain."
+        ),
+        agent=calculator,
+        expected_output="JSON with exact totals filled where applicable",
+        context=[extract_task],
+    )
+
+    validate_task = Task(
+        description=(
+            "Validate and clean the extracted JSON for EXACT keys in {metrics}.\n"
+            "- The 'years' were used only to select the filing; do not force them in output.\n"
+            "- Keep ONLY years evidenced in THIS filing.\n"
+            "- Prefer realized compensation totals; reject forward-looking/target amounts.\n"
+            "- Every number must appear verbatim or be an exact sum of listed components in the same context.\n"
+            "- Strip $ and commas. Return VALID JSON only.\n\n"
             "FILING CONTENT START:\n{sec_filing_content}\nFILING CONTENT END."
         ),
-        agent=analyst,
+        agent=validator,
         expected_output="Filtered JSON limited to requested metrics",
-        context=[research_task],
+        context=[calculate_task],
+    )
+
+    export_task = Task(
+        description=(
+            "Prepare for export without altering content. Do not add metrics beyond {metrics}.\n"
+            "Return EXACTLY the validated JSON from the previous step with no extra narration or text."
+        ),
+        agent=exporter,
+        expected_output="VALID JSON identical to validated output",
+        context=[validate_task],
     )
 
     verbose_mode = os.getenv("CREW_VERBOSE", "false").lower() == "true"
@@ -197,8 +296,8 @@ def build_crew() -> Crew:
         logger.info(f"CrewAI execution will be logged to {log_file}")
 
     return Crew(
-        agents=[researcher, analyst],
-        tasks=[research_task, analysis_task],
+        agents=[supervisor, retriever, cleaner, extractor, calculator, validator, exporter],
+        tasks=[plan_task, retrieve_task, clean_task, extract_task, calculate_task, validate_task, export_task],
         process=Process.sequential,
         verbose=verbose_mode,
         output_log_file=log_file,
@@ -209,7 +308,7 @@ def build_crew() -> Crew:
 # Wrapper with RAG + retrieval
 # ---------------------------------------------------------------------------
 class SECDataCrew:
-    """Wrapper: retrieve filings, apply simple RAG, then run crew."""
+    """Wrapper: retrieve filings, build full-document context, then run crew (no RAG)."""
 
     def __init__(self) -> None:
         self.crew = build_crew()
@@ -222,7 +321,7 @@ class SECDataCrew:
         raw_output: bool = bool(inputs.get("raw_output", False))
         hint: str = inputs.get("hint", "")
         output_format: str = inputs.get("output_format", "json")
-        retrieval: str = inputs.get("retrieval", "llm")
+        # RAG removed: always build full-document context
 
         logger.info(f"Retrieving filings for {ticker} types={filing_types} years={years} metrics={metrics}")
         sec_data = retrieve_sec_data(ticker, years, filing_types)
@@ -230,88 +329,34 @@ class SECDataCrew:
             return f"ERROR: {sec_data['error']}"
 
         relevant_sections: List[str] = []
-        if retrieval == "llm":
-            # Provide the full (cleaned) document content for each filing, plus compact table previews
-            logger.info("Using direct LLM parsing (no RAG)")
-            for idx, doc in enumerate(sec_data.get("documents", []), start=1):
-                header = (
-                    f"\n=== {doc['form']} Filing {doc['filing_date']} (Doc {idx}) ===\n"
-                    f"URL: {doc.get('url','')}\n"
-                    f"If you cite values from this section, include 'source_url' as this URL and the 'page' if visible.\n"
-                )
-                # Build table previews
-                table_snippets: List[str] = []
-                for t in (doc.get("tables") or [])[:8]:
-                    cols = [c.lower() for c in t.get("columns", [])]
-                    if any(
-                        (
-                            "compensation" in c or "total" in c or "pay" in c or "remuneration" in c or "ceo" in c or "chief executive" in c or "named executive" in c
-                        )
-                        for c in cols
-                    ):
-                        rows = t.get("rows", [])[:5]
-                        import json as _json
-                        table_snippets.append(_json.dumps({"columns": t.get("columns"), "rows": rows}))
-                tables_section = ("\n\n[Tables JSON Preview]\n" + "\n".join(table_snippets)) if table_snippets else ""
-                # Full cleaned text
-                ctx = doc["text"]
-                relevant_sections.append(header + ctx + tables_section)
-        else:
-            # Default: RAG-based focused context
-            rag = SimpleRAG(chunk_size=2000, overlap=200)
-            base_query = " ".join(metrics) if metrics else "compensation"
-            aug_terms: List[str] = []
-            mq = base_query.lower()
-            if "compensation" in mq or "pay" in mq or "remuneration" in mq:
-                aug_terms += [
-                    "total",
-                    "compensation",
-                    "pay",
-                    "remuneration",
-                    "executive",
-                    "named executive officers",
-                    "proxy statement",
-                ]
-            if "ceo" in mq or "chief executive" in mq:
-                aug_terms += [
-                    "chief executive officer",
-                    "principal executive officer",
-                ]
-            query_terms = base_query + (" " + " ".join(aug_terms) if aug_terms else "")
-            if hint:
-                query_terms += f" {hint}"
-            for idx, doc in enumerate(sec_data.get("documents", []), start=1):
-                logger.info(f"RAG scanning {doc['form']} {doc['filing_date']}")
-                ctx = rag.extract_context_for_query(
-                    text=doc["text"],
-                    source_info={"form": doc["form"], "filing_date": doc["filing_date"], "ticker": ticker},
-                    query=query_terms,
-                )
-                header = (
-                    f"\n=== {doc['form']} Filing {doc['filing_date']} (Doc {idx}) ===\n"
-                    f"URL: {doc.get('url','')}\n"
-                    f"If you cite values from this section, include 'source_url' as this URL and the 'page' if visible.\n"
-                )
-                table_snippets: List[str] = []
-                for t in (doc.get("tables") or [])[:8]:
-                    cols = [c.lower() for c in t.get("columns", [])]
-                    if any(
-                        (
-                            "compensation" in c or "total" in c or "pay" in c or "remuneration" in c or "ceo" in c or "chief executive" in c or "named executive" in c
-                        )
-                        for c in cols
-                    ):
-                        rows = t.get("rows", [])[:5]
-                        import json as _json
-                        table_snippets.append(_json.dumps({"columns": t.get("columns"), "rows": rows}))
-                tables_section = ("\n\n[Tables JSON Preview]\n" + "\n".join(table_snippets)) if table_snippets else ""
-                relevant_sections.append(header + ctx + tables_section)
+        logger.info("Building full-document context (RAG disabled)")
+        for idx, doc in enumerate(sec_data.get("documents", []), start=1):
+            header = (
+                f"\n=== {doc['form']} Filing {doc['filing_date']} (Doc {idx}) ===\n"
+                f"URL: {doc.get('url','')}\n"
+                f"If you cite values from this section, include 'source_url' as this URL and the 'page' if visible.\n"
+            )
+            table_snippets: List[str] = []
+            for t in (doc.get("tables") or [])[:8]:
+                cols = [c.lower() for c in t.get("columns", [])]
+                if any(
+                    (
+                        "compensation" in c or "total" in c or "pay" in c or "remuneration" in c or "ceo" in c or "chief executive" in c or "named executive" in c
+                    )
+                    for c in cols
+                ):
+                    rows = t.get("rows", [])[:5]
+                    import json as _json
+                    table_snippets.append(_json.dumps({"columns": t.get("columns"), "rows": rows}))
+            tables_section = ("\n\n[Tables JSON Preview]\n" + "\n".join(table_snippets)) if table_snippets else ""
+            ctx = doc["text"]
+            relevant_sections.append(header + ctx + tables_section)
 
         sec_filing_content = "\n".join(relevant_sections)
 
         # Helper: run crew once and parse JSON if possible
         def _run_and_parse(_inputs: Dict[str, Any]):
-            logger.info(f"Executing crew using retrieval='{retrieval}' with hint={'yes' if _inputs.get('hint') else 'no'}")
+            logger.info(f"Executing crew (RAG disabled) with hint={'yes' if _inputs.get('hint') else 'no'}")
             res = self.crew.kickoff(inputs=_inputs)
             try:
                 import json as _json
