@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import os
 from typing import Optional, List
+import time
+import io
+import re
+import contextlib
 import typer
 from tqdm import tqdm
 from rich import print
@@ -262,6 +266,7 @@ def main(
             crew = SECDataCrew()
             
             results = []
+            overall_start = time.perf_counter()
             for identifier, year in pairs:
                 try:
                     if is_cik(identifier):
@@ -289,8 +294,24 @@ def main(
                         "raw_output": raw_output,
                     }
                     
-                    # Execute the crew - this will show agent activity
-                    crew_result = crew.kickoff(inputs=inputs)
+                    # Execute the crew while capturing stdout/stderr to detect a trace URL
+                    start = time.perf_counter()
+                    stdout_buf, stderr_buf = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                        crew_result = crew.kickoff(inputs=inputs)
+                    elapsed = time.perf_counter() - start
+
+                    # Try to extract the ephemeral CrewAI trace URL from captured output (if any)
+                    captured_text = f"{stdout_buf.getvalue()}\n{stderr_buf.getvalue()}"
+                    trace_url = None
+                    try:
+                        urls = re.findall(r"https?://[^\s)]+", captured_text, flags=re.IGNORECASE)
+                        for u in urls:
+                            if "crewai.com/crewai_plus/ephemeral_trace_batches" in u:
+                                trace_url = u
+                                break
+                    except Exception:
+                        trace_url = None
                     
                     # Process crew results
                     result_data = {
@@ -302,16 +323,40 @@ def main(
                         "hint": hint,
                         "processing_method": "CrewAI full-document context",
                         "filing_types": filing_types,
-                        "metrics": metric_list
+                        "metrics": metric_list,
+                        "duration_seconds": round(elapsed, 3),
+                        "trace_url": trace_url,
                     }
                     results.append(result_data)
                     
+                    # Human-friendly timing output
+                    def _fmt_secs(s: float) -> str:
+                        s_int = int(s)
+                        if s_int < 60:
+                            return f"{s:.1f}s"
+                        mins, secs = divmod(s_int, 60)
+                        if mins < 60:
+                            return f"{mins}m {secs}s"
+                        hours, mins = divmod(mins, 60)
+                        return f"{hours}h {mins}m {secs}s"
+
                     if verbose:
-                        typer.echo(f"[INFO] CrewAI processing completed for {identifier}")
+                        typer.echo(f"[INFO] CrewAI processing completed for {identifier} in {_fmt_secs(elapsed)}")
+                        if trace_url:
+                            typer.echo(f"[INFO] Trace URL: {trace_url}")
+                            try:
+                                if Confirm.ask("Open CrewAI execution trace in your browser now?", default=False):
+                                    # Prefer typer.launch for cross-platform behavior
+                                    typer.launch(trace_url)
+                            except Exception as _e:
+                                typer.echo(f"[WARN] Could not open browser automatically: {_e}")
                     
                 except Exception as e:
                     typer.echo(f"[ERROR] CrewAI processing failed for {identifier}: {e}")
                     results.append({"identifier": identifier, "year": year, "error": str(e)})
+            # End overall timer and report total duration
+            total_elapsed = time.perf_counter() - overall_start
+            typer.echo(f"[INFO] Total Crew run time: {int(total_elapsed)}s ({total_elapsed/60:.2f} min)")
             
         except ImportError:
             typer.echo("[ERROR] CrewAI not available. Falling back to direct processing...")

@@ -187,7 +187,7 @@ def build_crew() -> Crew:
         "  \"<REQUESTED METRIC NAME>\": {\n"
         "    \"<YEAR_A>\": {\n"
         "      \"value\": 1234567,\n"
-        "      \"name\": \"Executive Name\",\n"
+        "      \"name\": \"Name if available\",\n"
         "      \"title\": \"Full Title\",\n"
         "      \"source\": \"Table or section name\",\n"
         "      \"source_url\": \"https://www.sec.gov/Archives/...\",\n"
@@ -213,7 +213,7 @@ def build_crew() -> Crew:
     retrieve_task = Task(
         description=(
             "Retrieve relevant filings for ticker={ticker}, years={years}, types={filing_types}.\n"
-            "If available, use provided seed context: {sec_retrieval_hint}.\n"
+            "If available, use provided hint: {hint}.\n"
             "Return a compact JSON with a 'documents' array (form, filing_date, url, primary_document)."
         ),
         agent=retriever,
@@ -243,6 +243,8 @@ def build_crew() -> Crew:
             "4. Numbers must be exact (no $, commas, or text). Values must appear verbatim or be exact sums of components from the same context.\n"
             "5. If a requested metric is absent for ALL years, set that metric to null.\n"
             "6. OUTPUT VALID JSON ONLY. Top-level keys must be EXACTLY the requested metrics.\n\n"
+            "7. If a metric is not explicitly reported but can be EXACTLY computed from visible components in the same context, do so.\n"
+            "8. If the metric is available for more years, return them all. Company filings usually report a couple of years of data for comparison."
             "FILING CONTENT START:\n{sec_filing_content}\nFILING CONTENT END.\n\n"
             "For each year entry include 'source_url' and 'page' if discernible; 'source' can be a brief table/section label.\n"
             f"{example_block}\n"
